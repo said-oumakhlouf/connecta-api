@@ -60,6 +60,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Generated build files
 **/dist/
+/src/generated/prisma/
 
 # AI tool skills
 .agents/
