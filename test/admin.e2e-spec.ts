@@ -65,6 +65,155 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Admin (e2e)', () => {
       .set('Authorization', authorization)
       .send({ quantity });
 
+  const changeStatus = (id: string, status: unknown) =>
+    request(app.getHttpServer())
+      .post(`/admin/orders/${id}/status`)
+      .set('Authorization', authorization)
+      .send({ status });
+
+  const createOrder = async () => {
+    await restock(5).expect(201);
+    const response = await request(app.getHttpServer())
+      .post('/orders')
+      .send({
+        customerName: 'Test Admin',
+        customerEmail: email,
+        items: [{ productId, quantity: 2 }],
+      })
+      .expect(201);
+    return response.body.id as string;
+  };
+
+  it('confirms without changing stock or historical amounts and permits safe repetition', async () => {
+    const id = await createOrder();
+    for (let i = 0; i < 2; i++) {
+      const result = await changeStatus(id, 'CONFIRMED').expect(200);
+      expect(result.headers['cache-control']).toBe('no-store');
+      expect(result.body).toMatchObject({
+        id,
+        status: 'CONFIRMED',
+        total: 6000,
+      });
+      expect(result.body.items[0]).toMatchObject({
+        quantity: 2,
+        discount: 1000,
+        lineTotal: 6000,
+      });
+    }
+    expect(
+      (await prisma.product.findUniqueOrThrow({ where: { id: productId } }))
+        .stock,
+    ).toBe(3);
+  });
+
+  it.each(['PENDING', 'CONFIRMED'] as const)(
+    'cancels a %s order and restores stock exactly once',
+    async (status) => {
+      const id = await createOrder();
+      if (status === 'CONFIRMED') await changeStatus(id, status).expect(200);
+      await prisma.product.update({
+        where: { id: productId },
+        data: { active: false },
+      });
+      await changeStatus(id, 'CANCELLED').expect(200);
+      await changeStatus(id, 'CANCELLED').expect(200);
+      await changeStatus(id, 'CONFIRMED').expect(409);
+      const product = await prisma.product.findUniqueOrThrow({
+        where: { id: productId },
+      });
+      expect(product.stock).toBe(5);
+      expect(product.active).toBe(false);
+      expect(
+        (await prisma.order.findUniqueOrThrow({ where: { id } })).status,
+      ).toBe('CANCELLED');
+    },
+  );
+
+  it('validates order actions and protects them from unauthenticated callers', async () => {
+    const id = await createOrder();
+    await request(app.getHttpServer())
+      .post(`/admin/orders/${id}/status`)
+      .send({ status: 'CANCELLED' })
+      .expect(401);
+    for (const status of ['PENDING', 'PAID', null, 1])
+      await changeStatus(id, status).expect(400);
+    await changeStatus('invalid-id', 'CANCELLED').expect(400);
+    await changeStatus(randomUUID(), 'CANCELLED').expect(404);
+    await request(app.getHttpServer())
+      .post(`/admin/orders/${id}/status`)
+      .set('Authorization', authorization)
+      .send({ status: 'CONFIRMED', total: 0 })
+      .expect(400);
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id } })).status,
+    ).toBe('PENDING');
+  });
+
+  it('rolls back the cancellation and all stock changes when any restoration would overflow', async () => {
+    const extra = await prisma.product.create({
+      data: {
+        name: 'Extra',
+        slug: randomUUID(),
+        price: 1000,
+        stock: 2,
+      },
+    });
+    try {
+      await restock(2).expect(201);
+      const response = await request(app.getHttpServer())
+        .post('/orders')
+        .send({
+          customerName: 'Test Admin',
+          customerEmail: email,
+          items: [
+            { productId, quantity: 1 },
+            { productId: extra.id, quantity: 1 },
+          ],
+        })
+        .expect(201);
+      await prisma.product.update({
+        where: { id: extra.id },
+        data: { stock: 2147483647 },
+      });
+      await changeStatus(response.body.id, 'CANCELLED').expect(409);
+      expect(
+        (
+          await prisma.order.findUniqueOrThrow({
+            where: { id: response.body.id },
+          })
+        ).status,
+      ).toBe('PENDING');
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: productId } }))
+          .stock,
+      ).toBe(1);
+    } finally {
+      await prisma.order.deleteMany({ where: { customerEmail: email } });
+      await prisma.product.delete({ where: { id: extra.id } });
+    }
+  });
+
+  it.skipIf(process.env.TEST_SERIAL_DATABASE === 'true')(
+    'restores stock once during simultaneous confirmation and cancellations',
+    async () => {
+      const id = await createOrder();
+      const responses = await Promise.all([
+        changeStatus(id, 'CONFIRMED'),
+        changeStatus(id, 'CANCELLED'),
+        changeStatus(id, 'CANCELLED'),
+      ]);
+      expect([200, 409]).toContain(responses[0].status);
+      expect(responses.slice(1).map((r) => r.status)).toEqual([200, 200]);
+      expect(
+        (await prisma.order.findUniqueOrThrow({ where: { id } })).status,
+      ).toBe('CANCELLED');
+      expect(
+        (await prisma.product.findUniqueOrThrow({ where: { id: productId } }))
+          .stock,
+      ).toBe(5);
+    },
+  );
+
   it('protects order data, product data and stock changes', async () => {
     await request(app.getHttpServer()).get('/admin/orders').expect(401);
     await request(app.getHttpServer()).get('/admin/products').expect(401);

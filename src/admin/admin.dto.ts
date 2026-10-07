@@ -1,6 +1,8 @@
 import { Type } from 'class-transformer';
 import {
   IsInt,
+  IsIn,
+  IsUUID,
   IsString,
   Max,
   MaxLength,
@@ -34,4 +36,14 @@ export class RestockProductDto {
   @Min(1)
   @Max(10000)
   quantity: number;
+}
+
+export class OrderIdDto {
+  @IsUUID()
+  id: string;
+}
+
+export class UpdateOrderStatusDto {
+  @IsIn(['CONFIRMED', 'CANCELLED'])
+  status: 'CONFIRMED' | 'CANCELLED';
 }

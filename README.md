@@ -41,6 +41,7 @@ Ouvrir **http://localhost:3000/admin** dans le frontend CONNECTA et se connecter
 - `POST /admin/login` avec `{ "password": "..." }` : session opaque valable 8 heures.
 - `GET /admin/orders?page=1&limit=20` : commandes de la plus récente à la plus ancienne,
   coordonnées, statut et lignes historiques. Maximum 100 commandes par page.
+- `POST /admin/orders/:id/status` avec `{ "status": "CONFIRMED" }` ou `{ "status": "CANCELLED" }` : traiter une commande.
 - `GET /admin/products` : catalogue complet, y compris les produits inactifs.
 - `POST /admin/products/:id/restock` avec `{ "quantity": 20 }` : **ajoute** 20 unités
   au stock existant, sans changer les tarifs ou l'état actif du produit.
@@ -63,8 +64,11 @@ redevient commandable dès qu'il reçoit du stock ; un produit inactif reste ina
 Ne pas répéter automatiquement un ajout si la connexion est interrompue : actualiser
 le stock pour vérifier le résultat avant de réessayer.
 
-Cette version permet de consulter les statuts ; elle ne les modifie pas et n'annule
-pas les commandes. Les commandes de test existantes restent visibles.
+Une commande en attente peut être confirmée ou annulée ; une commande confirmée
+peut être annulée. Une annulation est définitive et restitue le stock une seule fois,
+même si la requête est répétée ou exécutée simultanément. Le statut et tous les
+retours en stock sont transactionnels : un dépassement de stock annule toute l’action.
+Confirmer une commande ne valide aucun paiement. Les commandes de test restent visibles.
 
 ## Créer une commande
 
@@ -108,7 +112,7 @@ Si une ligne échoue, les autres décréments sont annulés et aucune commande n
 - `409` : stock insuffisant ou produit modifié pendant la commande.
 
 Cette étape enregistre une commande sans paiement et retire immédiatement les quantités du stock.
-Les transitions de statut, l'annulation avec restitution du stock, la livraison et la protection contre une soumission répétée restent à implémenter.
+La livraison, le paiement et la protection contre une création de commande répétée restent à implémenter.
 Aucune route publique de consultation des commandes n'est exposée.
 
 ## Vérifications

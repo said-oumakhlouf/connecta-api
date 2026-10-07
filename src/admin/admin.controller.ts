@@ -21,13 +21,17 @@ import {
   AdminLoginDto,
   AdminOrdersQueryDto,
   RestockProductDto,
+  OrderIdDto,
+  UpdateOrderStatusDto,
 } from './admin.dto.js';
 
 const validate = (
   expectedType:
     | typeof AdminLoginDto
     | typeof AdminOrdersQueryDto
-    | typeof RestockProductDto,
+    | typeof RestockProductDto
+    | typeof OrderIdDto
+    | typeof UpdateOrderStatusDto,
 ) =>
   new ValidationPipe({
     transform: true,
@@ -69,6 +73,16 @@ export class AdminController {
   @Header('Cache-Control', 'no-store')
   products() {
     return this.admin.products();
+  }
+
+  @Post('orders/:id/status')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  updateOrderStatus(
+    @Param(validate(OrderIdDto)) { id }: OrderIdDto,
+    @Body(validate(UpdateOrderStatusDto)) dto: UpdateOrderStatusDto,
+  ) {
+    return this.admin.updateOrderStatus(id, dto.status);
   }
 
   @Post('products/:id/restock')
