@@ -7,6 +7,7 @@ import type { App } from 'supertest/types.js';
 
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { configureCors } from '../src/configure-cors.js';
 
 // Use a dedicated migrated database, never the development DATABASE_URL.
 describe.skipIf(!process.env.TEST_DATABASE_URL)(
@@ -26,6 +27,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         .useValue(prisma)
         .compile();
       app = module.createNestApplication();
+      configureCors(app, 'http://localhost:3000');
       await app.init();
     });
 
@@ -68,6 +70,33 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       customerName: 'Saïd',
       customerEmail,
       items,
+    });
+
+    it('allows browser preflight requests from the CONNECTA frontend', async () => {
+      const response = await request(app.getHttpServer())
+        .options('/orders')
+        .set('Origin', 'http://localhost:3000')
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type')
+        .expect(204);
+      expect(response.headers['access-control-allow-origin']).toBe(
+        'http://localhost:3000',
+      );
+      expect(response.headers['access-control-allow-methods']).toContain(
+        'POST',
+      );
+      expect(response.headers['access-control-allow-headers']).toBe(
+        'Content-Type',
+      );
+    });
+
+    it('does not enable CORS for an unlisted origin', async () => {
+      const response = await request(app.getHttpServer())
+        .options('/orders')
+        .set('Origin', 'https://unlisted.example')
+        .set('Access-Control-Request-Method', 'POST')
+        .expect(204);
+      expect(response.headers['access-control-allow-origin']).toBeUndefined();
     });
 
     it('preserves product routes and returns 404 for a missing slug', async () => {

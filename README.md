@@ -16,6 +16,14 @@ npm run start:dev
 Le serveur écoute sur **http://localhost:3001** par défaut (`PORT` permet de le changer).
 Le client Prisma est généré localement et ignoré par Git. `npm run build` le régénère automatiquement.
 
+## Connexion du frontend
+
+Les requêtes du navigateur sont autorisées depuis `http://localhost:3000` et
+`http://127.0.0.1:3000` par défaut. Pour changer ces origines, définir
+`CORS_ORIGINS` dans `.env` avec des adresses séparées par des virgules.
+En production, renseigner l'origine HTTPS exacte du site CONNECTA puis redémarrer l'API.
+Le frontend utilise sa propre variable `NEXT_PUBLIC_API_URL` pour joindre ce backend.
+
 ## Produits
 
 - `GET /products` : produits actifs.
