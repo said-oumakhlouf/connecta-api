@@ -85,7 +85,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       expect(response.headers['access-control-allow-methods']).toContain(
         'POST',
       );
-      expect(response.headers['access-control-allow-headers']).toBe(
+      expect(response.headers['access-control-allow-headers']).toContain(
         'Content-Type',
       );
     });

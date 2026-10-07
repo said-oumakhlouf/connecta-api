@@ -29,6 +29,43 @@ Le frontend utilise sa propre variable `NEXT_PUBLIC_API_URL` pour joindre ce bac
 - `GET /products` : produits actifs.
 - `GET /products/:slug` : produit actif, ou `404`.
 
+## Administration
+
+Dans le `.env` du **backend**, ajouter `ADMIN_PASSWORD` avec un mot de passe privé
+de **16 à 256 caractères**, puis redémarrer l'API. Aucun mot de passe par défaut
+n'est fourni. Sans cette configuration, la connexion admin est désactivée (`503`).
+Ne jamais committer ce mot de passe ni le placer dans une variable `NEXT_PUBLIC_*`.
+
+Ouvrir **http://localhost:3000/admin** dans le frontend CONNECTA et se connecter.
+
+- `POST /admin/login` avec `{ "password": "..." }` : session opaque valable 8 heures.
+- `GET /admin/orders?page=1&limit=20` : commandes de la plus récente à la plus ancienne,
+  coordonnées, statut et lignes historiques. Maximum 100 commandes par page.
+- `GET /admin/products` : catalogue complet, y compris les produits inactifs.
+- `POST /admin/products/:id/restock` avec `{ "quantity": 20 }` : **ajoute** 20 unités
+  au stock existant, sans changer les tarifs ou l'état actif du produit.
+- `POST /admin/logout` : invalide la session.
+
+Toutes les routes sauf la connexion exigent `Authorization: Bearer <token>`.
+Les réponses contenant les sessions, clients et produits admin utilisent `Cache-Control: no-store`.
+Le frontend garde le token uniquement en mémoire : un rechargement demande une
+nouvelle connexion. Le mot de passe est effacé du formulaire après connexion.
+Les sessions et la limitation des tentatives sont en mémoire dans **une instance**
+de l'API : un redémarrage invalide les sessions. Pour plusieurs instances, prévoir
+un stockage de sessions et de limitation partagé avant ce changement d'architecture.
+Cinq échecs de connexion par adresse entraînent un blocage jusqu'à la fin de la
+fenêtre de 15 minutes. En production, utiliser HTTPS pour le site et l'API.
+
+Les quantités de réapprovisionnement sont des entiers de 1 à 10 000. L'incrément
+est atomique et conserve les commandes et ajouts de stock simultanés. Le stock ne
+peut pas dépasser la limite entière de PostgreSQL (`409`). Un produit épuisé actif
+redevient commandable dès qu'il reçoit du stock ; un produit inactif reste inactif.
+Ne pas répéter automatiquement un ajout si la connexion est interrompue : actualiser
+le stock pour vérifier le résultat avant de réessayer.
+
+Cette version permet de consulter les statuts ; elle ne les modifie pas et n'annule
+pas les commandes. Les commandes de test existantes restent visibles.
+
 ## Créer une commande
 
 `POST /orders`

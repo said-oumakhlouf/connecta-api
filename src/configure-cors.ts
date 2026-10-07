@@ -11,7 +11,7 @@ export function configureCors(
       .map((origin) => origin.trim())
       .filter(Boolean),
     methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
     maxAge: 600,
   });
 }
