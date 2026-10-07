@@ -7,6 +7,7 @@ import {
 
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
+import { calculateLinePrice } from './order-pricing.js';
 
 @Injectable()
 export class OrdersService {
@@ -41,15 +42,23 @@ export class OrdersService {
           productName: product.name,
           quantity,
           unitPrice: product.price,
-          lineTotal: product.price * quantity,
+          ...calculateLinePrice(product.price, quantity, product.duoPrice),
         };
       });
       const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
-      if (items.some((item) => item.unitPrice < 0) || total > 2_147_483_647) {
+      if (
+        items.some(
+          (item) =>
+            item.unitPrice < 0 ||
+            item.lineTotal < 0 ||
+            item.discount > 2_147_483_647,
+        ) ||
+        total > 2_147_483_647
+      ) {
         throw new BadRequestException('Montant de commande invalide');
       }
 
-      for (const item of items) {
+      for (const [index, item] of items.entries()) {
         // The stock condition is evaluated by PostgreSQL during the UPDATE,
         // including when another order is waiting on the same row.
         const result = await tx.product.updateMany({
@@ -57,6 +66,7 @@ export class OrdersService {
             id: item.productId,
             active: true,
             price: item.unitPrice,
+            duoPrice: products[index].duoPrice,
             stock: { gte: item.quantity },
           },
           data: { stock: { decrement: item.quantity } },

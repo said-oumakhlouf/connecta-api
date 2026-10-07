@@ -12,6 +12,7 @@ model Product {
   name       String
   slug       String      @unique
   price      Int
+  duoPrice   Int?
   stock      Int         @default(0)
   active     Boolean     @default(true)
   createdAt  DateTime    @default(now())
@@ -43,6 +44,7 @@ model OrderItem {
   productName String
   quantity    Int
   unitPrice   Int
+  discount    Int     @default(0)
   lineTotal   Int
   order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product     Product @relation(fields: [productId], references: [id], onDelete: Restrict)

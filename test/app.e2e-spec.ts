@@ -35,7 +35,13 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       customerEmail = `${key}@example.com`;
       const products = await prisma.product.createManyAndReturn({
         data: [
-          { name: 'Hoco EW75', slug: `${key}-hoco`, price: 3500, stock: 3 },
+          {
+            name: 'Hoco EW75',
+            slug: `${key}-hoco`,
+            price: 3500,
+            duoPrice: 6000,
+            stock: 3,
+          },
           {
             name: 'Second produit',
             slug: `${key}-other`,
@@ -73,6 +79,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         .get(`/products/${product.slug}`)
         .expect(200);
       expect(response.body.id).toBe(product.id);
+      expect(response.body.duoPrice).toBe(6000);
       await request(app.getHttpServer())
         .get(`/products/${randomUUID()}`)
         .expect(404);
@@ -83,22 +90,26 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         .post('/orders')
         .send(body())
         .expect(201);
-      expect(response.body).toMatchObject({ status: 'PENDING', total: 7000 });
+      expect(response.body).toMatchObject({ status: 'PENDING', total: 6000 });
       expect(response.body.items).toHaveLength(1);
       expect(response.body.items[0]).toMatchObject({
         quantity: 2,
         unitPrice: 3500,
-        lineTotal: 7000,
+        discount: 1000,
+        lineTotal: 6000,
       });
       await prisma.product.update({
         where: { id: productIds[0] },
-        data: { price: 4000 },
+        data: { price: 4000, duoPrice: 7000 },
       });
       const order = await prisma.order.findUniqueOrThrow({
         where: { id: response.body.id },
         include: { items: true },
       });
       expect(order.items[0].unitPrice).toBe(3500);
+      expect(order.total).toBe(6000);
+      expect(order.items[0].discount).toBe(1000);
+      expect(order.items[0].lineTotal).toBe(6000);
       expect(
         (
           await prisma.product.findUniqueOrThrow({
@@ -119,7 +130,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         )
         .expect(201);
       expect(response.body.items).toHaveLength(1);
-      expect(response.body.total).toBe(10500);
+      expect(response.body.total).toBe(9500);
       expect(
         (
           await prisma.product.findUniqueOrThrow({
@@ -139,6 +150,112 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         .send({ ...body(), total: 1 })
         .expect(400);
       expect(await prisma.order.count({ where: { customerEmail } })).toBe(0);
+    });
+
+    it.each([
+      [1, 3500, 0],
+      [2, 6000, 1000],
+      [3, 9500, 1000],
+      [4, 12000, 2000],
+    ])(
+      'applies the Duo offer to %i units',
+      async (quantity, total, discount) => {
+        await prisma.product.update({
+          where: { id: productIds[0] },
+          data: { stock: 10 },
+        });
+        const response = await request(app.getHttpServer())
+          .post('/orders')
+          .send(body([{ productId: productIds[0], quantity }]))
+          .expect(201);
+        expect(response.body.total).toBe(total);
+        expect(response.body.items[0]).toMatchObject({
+          quantity,
+          discount,
+          lineTotal: total,
+        });
+        expect(
+          (
+            await prisma.product.findUniqueOrThrow({
+              where: { id: productIds[0] },
+            })
+          ).stock,
+        ).toBe(10 - quantity);
+      },
+    );
+
+    it('keeps products without a Duo offer at their regular price in a mixed order', async () => {
+      await prisma.product.update({
+        where: { id: productIds[1] },
+        data: { stock: 2 },
+      });
+      const response = await request(app.getHttpServer())
+        .post('/orders')
+        .send(
+          body([
+            { productId: productIds[0], quantity: 2 },
+            { productId: productIds[1], quantity: 2 },
+          ]),
+        )
+        .expect(201);
+      expect(response.body.total).toBe(8000);
+      expect(response.body.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            productId: productIds[0],
+            lineTotal: 6000,
+            discount: 1000,
+          }),
+          expect.objectContaining({
+            productId: productIds[1],
+            lineTotal: 2000,
+            discount: 0,
+          }),
+        ]),
+      );
+    });
+
+    it('rejects a client-supplied discount', async () => {
+      await request(app.getHttpServer())
+        .post('/orders')
+        .send({
+          ...body(),
+          items: [{ productId: productIds[0], quantity: 2, discount: 7000 }],
+        })
+        .expect(400);
+      expect(
+        (
+          await prisma.product.findUniqueOrThrow({
+            where: { id: productIds[0] },
+          })
+        ).stock,
+      ).toBe(3);
+    });
+
+    it('uses regular pricing when the offer is disabled', async () => {
+      await prisma.product.update({
+        where: { id: productIds[0] },
+        data: { duoPrice: null },
+      });
+      const response = await request(app.getHttpServer())
+        .post('/orders')
+        .send(body())
+        .expect(201);
+      expect(response.body.total).toBe(7000);
+      expect(response.body.items[0].discount).toBe(0);
+    });
+
+    it('does not charge more when regular pricing is cheaper than the Duo offer', async () => {
+      await prisma.product.update({
+        where: { id: productIds[0] },
+        data: { price: 2500 },
+      });
+      const response = await request(app.getHttpServer())
+        .post('/orders')
+        .send(body())
+        .expect(201);
+      expect(response.body.total).toBe(5000);
+      expect(response.body.items[0].discount).toBe(0);
     });
 
     it('rejects missing and inactive products', async () => {
@@ -192,7 +309,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
     it('rejects a total that would overflow a database integer', async () => {
       await prisma.product.update({
         where: { id: productIds[0] },
-        data: { price: 2_147_483_647 },
+        data: { price: 2_147_483_647, duoPrice: null },
       });
       await request(app.getHttpServer())
         .post('/orders')

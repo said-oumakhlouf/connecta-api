@@ -39,9 +39,20 @@ Les lignes répétées sont regroupées (maximum 100 unités par produit).
 
 Les montants sont des entiers **en centimes** : `3500 = 35 €`.
 Vérifier cette convention pour les produits déjà présents en base : aucune migration ne convertit leurs prix.
-Le serveur calcule le montant depuis `Product.price` et conserve le nom et le prix au moment de la commande.
-Pour le moment, le montant est le prix unitaire multiplié par la quantité :
-**l'offre Duo à 60 € n'est pas encore appliquée par cette API**.
+Le serveur calcule le montant depuis `Product.price` et `Product.duoPrice`.
+L'offre Duo s'applique automatiquement à chaque paire du même produit, après regroupement des lignes répétées.
+Pour le Hoco EW75 : **1 = 35 €, 2 = 60 €, 3 = 95 €, 4 = 120 €**.
+Le stock diminue du nombre réel d'écouteurs commandés, soit deux unités par Duo.
+
+La migration active `duoPrice: 6000` sur le produit existant dont le slug est `hoco-ew75`.
+Les autres produits gardent `duoPrice: null` et leur tarif normal.
+Pour un Hoco ajouté après la migration, renseigner `duoPrice: 6000` en base pour activer l'offre.
+Une offre plus chère que deux unités au tarif normal est ignorée.
+
+Chaque ligne conserve le nom, le prix unitaire normal (`unitPrice`), la remise totale (`discount`) et le montant après remise (`lineTotal`).
+Pour deux Hoco : `unitPrice: 3500`, `discount: 1000`, `lineTotal: 6000`.
+Ces montants restent inchangés si le tarif ou l'offre du produit évolue ensuite.
+Les commandes créées avant cette migration conservent leurs montants avec `discount: 0`.
 
 La création et le retrait du stock se font dans une transaction.
 Un décrément conditionné par le stock disponible empêche de vendre un stock négatif, même avec plusieurs commandes simultanées.
