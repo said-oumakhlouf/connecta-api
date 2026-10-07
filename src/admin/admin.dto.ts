@@ -8,6 +8,7 @@ import {
   MaxLength,
   Min,
   MinLength,
+  Matches,
 } from 'class-validator';
 
 export class AdminLoginDto {
@@ -46,4 +47,10 @@ export class OrderIdDto {
 export class UpdateOrderStatusDto {
   @IsIn(['CONFIRMED', 'CANCELLED'])
   status: 'CONFIRMED' | 'CANCELLED';
+}
+
+export class AdminAnalyticsQueryDto {
+  @IsString()
+  @Matches(/^20\d{2}-(0[1-9]|1[0-2])$/)
+  month: string;
 }

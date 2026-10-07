@@ -61,6 +61,80 @@ export class AdminService {
     });
   }
 
+  analytics(month: string) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        // PostgreSQL applies Paris daylight saving rules to both month boundaries.
+        const [bounds] = await tx.$queryRaw<Array<{ start: Date; end: Date }>>`
+        SELECT ((${month + '-01'}::date::timestamp AT TIME ZONE 'Europe/Paris') AT TIME ZONE 'UTC') AS start,
+          (((${month + '-01'}::date + INTERVAL '1 month') AT TIME ZONE 'Europe/Paris') AT TIME ZONE 'UTC') AS end
+      `;
+        const createdAt = { gte: bounds.start, lt: bounds.end };
+        const statuses = await tx.order.groupBy({
+          by: ['status'],
+          where: { createdAt },
+          _count: { _all: true },
+          _sum: { total: true },
+        });
+        const lines = await tx.orderItem.groupBy({
+          by: ['productId'],
+          where: {
+            order: { createdAt, status: { in: ['PENDING', 'CONFIRMED'] } },
+          },
+          _sum: { quantity: true, lineTotal: true, discount: true },
+          _count: { _all: true },
+        });
+        const products = await tx.product.findMany({
+          where: { id: { in: lines.map((line) => line.productId) } },
+          select: { id: true, name: true },
+        });
+        const names = new Map(
+          products.map((product) => [product.id, product.name]),
+        );
+        const getStatus = (status: 'PENDING' | 'CONFIRMED' | 'CANCELLED') => {
+          const value = statuses.find((row) => row.status === status);
+          return {
+            count: value?._count._all ?? 0,
+            amount: value?._sum.total ?? 0,
+          };
+        };
+        const pending = getStatus('PENDING');
+        const confirmed = getStatus('CONFIRMED');
+        const cancelled = getStatus('CANCELLED');
+        const ranking = lines
+          .map((line) => ({
+            productId: line.productId,
+            name: names.get(line.productId) ?? 'Produit',
+            units: line._sum.quantity ?? 0,
+            amount: line._sum.lineTotal ?? 0,
+            discount: line._sum.discount ?? 0,
+            orderCount: line._count._all,
+          }))
+          .sort(
+            (a, b) =>
+              b.units - a.units ||
+              b.amount - a.amount ||
+              a.productId - b.productId,
+          );
+        const orderCount = pending.count + confirmed.count;
+        const amount = pending.amount + confirmed.amount;
+        return {
+          month,
+          timeZone: 'Europe/Paris',
+          amount,
+          orderCount,
+          units: ranking.reduce((sum, item) => sum + item.units, 0),
+          averageOrder: orderCount ? Math.round(amount / orderCount) : 0,
+          pending,
+          confirmed,
+          cancelled,
+          products: ranking,
+        };
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+  }
+
   updateOrderStatus(id: string, status: 'CONFIRMED' | 'CANCELLED') {
     return this.prisma.$transaction(async (tx) => {
       // Lock the order through a conditional UPDATE before restoring any stock.

@@ -84,6 +84,138 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Admin (e2e)', () => {
     return response.body.id as string;
   };
 
+  it('protects and validates monthly analytics', async () => {
+    await request(app.getHttpServer())
+      .get('/admin/analytics?month=2026-03')
+      .expect(401);
+    for (const query of [
+      '',
+      '?month=2026-13',
+      '?month=2026-3',
+      '?month=1999-12',
+      '?month=2026-03&extra=true',
+    ]) {
+      await request(app.getHttpServer())
+        .get(`/admin/analytics${query}`)
+        .set('Authorization', authorization)
+        .expect(400);
+    }
+  });
+
+  it('aggregates every monthly order with Paris DST boundaries, snapshots, statuses and product ranking', async () => {
+    const extra = await prisma.product.create({
+      data: { name: 'Cable', slug: randomUUID(), price: 2000 },
+    });
+    const seed = async (
+      createdAt: string,
+      status: 'PENDING' | 'CONFIRMED' | 'CANCELLED',
+      quantity: number,
+      amount: number,
+      id = productId,
+      discount = 0,
+    ) => {
+      return prisma.order.create({
+        data: {
+          customerName: 'Analytics',
+          customerEmail: email,
+          createdAt: new Date(createdAt),
+          status,
+          total: amount,
+          items: {
+            create: {
+              productId: id,
+              productName: 'Historical name',
+              quantity,
+              unitPrice: (amount + discount) / quantity,
+              lineTotal: amount,
+              discount,
+            },
+          },
+        },
+      });
+    };
+    try {
+      await seed('2026-02-28T22:59:59.999Z', 'CONFIRMED', 100, 100000);
+      await seed(
+        '2026-02-28T23:00:00.000Z',
+        'PENDING',
+        2,
+        6000,
+        productId,
+        1000,
+      );
+      await seed('2026-03-31T21:59:59.999Z', 'CONFIRMED', 1, 3500);
+      await seed('2026-03-31T22:00:00.000Z', 'CONFIRMED', 100, 100000);
+      await seed('2026-03-15T12:00:00.000Z', 'CANCELLED', 100, 300000);
+      for (let i = 0; i < 21; i++)
+        await seed('2026-03-15T12:00:00.000Z', 'CONFIRMED', 1, 1000, extra.id);
+      await prisma.product.update({
+        where: { id: productId },
+        data: { name: 'Renamed Hoco', price: 9999, active: false },
+      });
+      const result = await request(app.getHttpServer())
+        .get('/admin/analytics?month=2026-03')
+        .set('Authorization', authorization)
+        .expect(200);
+      expect(result.headers['cache-control']).toBe('no-store');
+      expect(result.body).toMatchObject({
+        month: '2026-03',
+        timeZone: 'Europe/Paris',
+        amount: 30500,
+        orderCount: 23,
+        units: 24,
+        averageOrder: 1326,
+        pending: { count: 1, amount: 6000 },
+        confirmed: { count: 22, amount: 24500 },
+        cancelled: { count: 1, amount: 300000 },
+        products: [
+          {
+            productId: extra.id,
+            name: 'Cable',
+            units: 21,
+            amount: 21000,
+            discount: 0,
+            orderCount: 21,
+          },
+          {
+            productId,
+            name: 'Renamed Hoco',
+            units: 3,
+            amount: 9500,
+            discount: 1000,
+            orderCount: 2,
+          },
+        ],
+      });
+      // Cancelling an order updates its original purchase month, not the cancellation month.
+      const pending = await prisma.order.findFirstOrThrow({
+        where: { customerEmail: email, status: 'PENDING' },
+      });
+      await changeStatus(pending.id, 'CANCELLED').expect(200);
+      const updated = await request(app.getHttpServer())
+        .get('/admin/analytics?month=2026-03')
+        .set('Authorization', authorization)
+        .expect(200);
+      expect(updated.body.amount).toBe(24500);
+      expect(updated.body.units).toBe(22);
+      expect(updated.body.pending.count).toBe(0);
+      const empty = await request(app.getHttpServer())
+        .get('/admin/analytics?month=2099-12')
+        .set('Authorization', authorization)
+        .expect(200);
+      expect(empty.body).toMatchObject({
+        amount: 0,
+        orderCount: 0,
+        units: 0,
+        averageOrder: 0,
+        products: [],
+      });
+    } finally {
+      await prisma.order.deleteMany({ where: { customerEmail: email } });
+      await prisma.product.delete({ where: { id: extra.id } });
+    }
+  });
+
   it('confirms without changing stock or historical amounts and permits safe repetition', async () => {
     const id = await createOrder();
     for (let i = 0; i < 2; i++) {

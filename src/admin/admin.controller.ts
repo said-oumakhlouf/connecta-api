@@ -23,6 +23,7 @@ import {
   RestockProductDto,
   OrderIdDto,
   UpdateOrderStatusDto,
+  AdminAnalyticsQueryDto,
 } from './admin.dto.js';
 
 const validate = (
@@ -31,7 +32,8 @@ const validate = (
     | typeof AdminOrdersQueryDto
     | typeof RestockProductDto
     | typeof OrderIdDto
-    | typeof UpdateOrderStatusDto,
+    | typeof UpdateOrderStatusDto
+    | typeof AdminAnalyticsQueryDto,
 ) =>
   new ValidationPipe({
     transform: true,
@@ -73,6 +75,14 @@ export class AdminController {
   @Header('Cache-Control', 'no-store')
   products() {
     return this.admin.products();
+  }
+
+  @Get('analytics')
+  @Header('Cache-Control', 'no-store')
+  analytics(
+    @Query(validate(AdminAnalyticsQueryDto)) query: AdminAnalyticsQueryDto,
+  ) {
+    return this.admin.analytics(query.month);
   }
 
   @Post('orders/:id/status')

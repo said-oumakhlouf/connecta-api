@@ -42,6 +42,7 @@ Ouvrir **http://localhost:3000/admin** dans le frontend CONNECTA et se connecter
 - `GET /admin/orders?page=1&limit=20` : commandes de la plus récente à la plus ancienne,
   coordonnées, statut et lignes historiques. Maximum 100 commandes par page.
 - `POST /admin/orders/:id/status` avec `{ "status": "CONFIRMED" }` ou `{ "status": "CANCELLED" }` : traiter une commande.
+- `GET /admin/analytics?month=2026-10` : bilan de toutes les commandes du mois (heure de Paris), montants en centimes.
 - `GET /admin/products` : catalogue complet, y compris les produits inactifs.
 - `POST /admin/products/:id/restock` avec `{ "quantity": 20 }` : **ajoute** 20 unités
   au stock existant, sans changer les tarifs ou l'état actif du produit.
@@ -69,6 +70,25 @@ peut être annulée. Une annulation est définitive et restitue le stock une seu
 même si la requête est répétée ou exécutée simultanément. Le statut et tous les
 retours en stock sont transactionnels : un dépassement de stock annule toute l’action.
 Confirmer une commande ne valide aucun paiement. Les commandes de test restent visibles.
+
+## Bilan mensuel
+
+Le bilan regroupe les commandes créées pendant le mois choisi, du premier jour
+à minuit jusqu’au premier jour du mois suivant, en `Europe/Paris` (changements
+d’heure compris). Il couvre toutes les commandes, indépendamment de la pagination.
+Le mois est obligatoire au format `YYYY-MM` entre 2000 et 2099.
+
+Les commandes `PENDING` et `CONFIRMED` contribuent au total, aux unités et au panier
+moyen. Les commandes `CANCELLED` sont affichées séparément et exclues des totaux
+et du classement. Une annulation recalcule le mois de création de la commande.
+Ces sommes ne représentent ni des paiements encaissés ni un bénéfice.
+
+Le classement regroupe les lignes par identifiant produit et les trie par quantité,
+puis montant, puis identifiant. Les montants et remises viennent des lignes historiques,
+avec le nom actuel du produit pour éviter de séparer un produit renommé. Les produits
+inactifs ayant des commandes restent dans le classement. Les unités désignent les
+quantités physiques : un Duo compte deux unités. Une transaction en lecture répétable
+assure un bilan cohérent pendant les modifications concurrentes.
 
 ## Créer une commande
 
