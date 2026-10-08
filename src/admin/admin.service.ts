@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { AdminOrdersQueryDto } from './admin.dto.js';
+import { PaymentsService } from '../payments/payments.service.js';
 
 const productSelect = {
   id: true,
@@ -22,6 +23,9 @@ const orderSelect = {
   customerName: true,
   customerEmail: true,
   status: true,
+  paymentStatus: true,
+  reservedUntil: true,
+  paidAt: true,
   total: true,
   createdAt: true,
   items: {
@@ -39,7 +43,10 @@ const orderSelect = {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly payments: PaymentsService,
+  ) {}
 
   async orders({ page, limit }: AdminOrdersQueryDto) {
     const [orders, total] = await this.prisma.$transaction([
@@ -135,13 +142,30 @@ export class AdminService {
     );
   }
 
-  updateOrderStatus(id: string, status: 'CONFIRMED' | 'CANCELLED') {
+  async updateOrderStatus(id: string, status: 'CONFIRMED' | 'CANCELLED') {
+    const current = await this.prisma.order.findUnique({
+      where: { id },
+      select: orderSelect,
+    });
+    if (!current) throw new NotFoundException('Commande introuvable');
+    if (current.paymentStatus !== 'LEGACY') {
+      if (status === 'CONFIRMED') {
+        if (current.paymentStatus === 'PAID') return current;
+        throw new ConflictException('Seul Stripe peut confirmer le paiement');
+      }
+      await this.payments.cancel(id);
+      return this.prisma.order.findUniqueOrThrow({
+        where: { id },
+        select: orderSelect,
+      });
+    }
     return this.prisma.$transaction(async (tx) => {
       // Lock the order through a conditional UPDATE before restoring any stock.
       // Repeating the same action is safe, including after a lost HTTP response.
       const changed = await tx.order.updateMany({
         where: {
           id,
+          paymentStatus: 'LEGACY',
           status:
             status === 'CONFIRMED'
               ? 'PENDING'

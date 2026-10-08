@@ -13,7 +13,14 @@ import { calculateLinePrice } from './order-pricing.js';
 export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(dto: CreateOrderDto) {
+  async create(
+    dto: CreateOrderDto,
+    checkout?: {
+      checkoutKey: string;
+      checkoutFingerprint: string;
+      reservedUntil: Date;
+    },
+  ) {
     // Merge duplicate lines before checking stock and lock products in ID order.
     const quantities = new Map<number, number>();
     for (const item of dto.items) {
@@ -83,6 +90,9 @@ export class OrdersService {
           customerName: dto.customerName,
           customerEmail: dto.customerEmail,
           total,
+          ...(checkout
+            ? { ...checkout, paymentStatus: 'UNPAID' as const }
+            : {}),
           items: { create: items },
         },
         include: { items: true },

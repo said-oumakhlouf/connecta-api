@@ -65,11 +65,12 @@ redevient commandable dès qu'il reçoit du stock ; un produit inactif reste ina
 Ne pas répéter automatiquement un ajout si la connexion est interrompue : actualiser
 le stock pour vérifier le résultat avant de réessayer.
 
-Une commande en attente peut être confirmée ou annulée ; une commande confirmée
-peut être annulée. Une annulation est définitive et restitue le stock une seule fois,
-même si la requête est répétée ou exécutée simultanément. Le statut et tous les
-retours en stock sont transactionnels : un dépassement de stock annule toute l’action.
-Confirmer une commande ne valide aucun paiement. Les commandes de test restent visibles.
+Les anciennes commandes (`paymentStatus: LEGACY`) restent traitées manuellement :
+confirmation ou annulation avec restitution atomique du stock, une seule fois.
+Une confirmation manuelle ne prouve aucun paiement pour ces commandes.
+Pour Stripe, seul un paiement vérifié confirme la commande. Annuler une réservation
+expire d'abord sa session Stripe. Une commande `PAID` refuse cette annulation :
+le remboursement n'est pas encore implémenté.
 
 ## Bilan mensuel
 
@@ -90,9 +91,10 @@ inactifs ayant des commandes restent dans le classement. Les unités désignent 
 quantités physiques : un Duo compte deux unités. Une transaction en lecture répétable
 assure un bilan cohérent pendant les modifications concurrentes.
 
-## Créer une commande
+## Créer une ancienne commande de développement
 
-`POST /orders`
+`POST /orders` est réservé au développement sans clé Stripe configurée. Cette
+route renvoie `503` en production ou dès que `STRIPE_SECRET_KEY` est renseigné.
 
 ```json
 {
@@ -131,9 +133,9 @@ Si une ligne échoue, les autres décréments sont annulés et aucune commande n
 - `404` : produit absent ou inactif.
 - `409` : stock insuffisant ou produit modifié pendant la commande.
 
-Cette étape enregistre une commande sans paiement et retire immédiatement les quantités du stock.
-La livraison, le paiement et la protection contre une création de commande répétée restent à implémenter.
-Aucune route publique de consultation des commandes n'est exposée.
+Cette route de développement enregistre une commande LEGACY sans paiement et retire
+immédiatement les quantités du stock. Elle ne bénéficie pas des réservations
+temporaires Stripe. Ne pas l'utiliser pour une vente réelle.
 
 ## Vérifications
 
@@ -155,3 +157,65 @@ npm run test:e2e
 Sans `TEST_DATABASE_URL`, les tests e2e sont ignorés.
 GitHub Actions exécute les migrations et tous les tests avec PostgreSQL 17,
 y compris cinq commandes concurrentes pour le dernier exemplaire en stock.
+
+
+## Stripe Checkout — mode test
+
+Cette première intégration refuse les clés `sk_live_` et les sessions réelles.
+Elle ne débite pas d'argent réel. La livraison facturée et les remboursements
+restent à développer avant d'activer des ventes réelles.
+
+Après récupération du code :
+
+```bash
+npm ci
+npx prisma migrate deploy
+```
+
+La migration préserve les commandes existantes et les marque `LEGACY`.
+Configurer le `.env` du backend, jamais une variable `NEXT_PUBLIC_*` :
+
+```dotenv
+STRIPE_SECRET_KEY=sk_test_votre_cle_privee_de_test
+STRIPE_WEBHOOK_SECRET=whsec_secret_fourni_par_stripe
+CHECKOUT_SITE_URL=http://localhost:3000
+```
+
+Utiliser la clé privée d'un environnement de test Stripe. En local, installer
+[Stripe CLI](https://docs.stripe.com/stripe-cli), puis dans un terminal séparé :
+
+```bash
+stripe login
+stripe listen --forward-to localhost:3001/payments/webhook
+```
+
+Copier le secret `whsec_...` affiché par cette commande dans `.env`, puis redémarrer
+le backend. Laisser le terminal d'écoute ouvert. Le secret du CLI est différent
+de celui d'un endpoint configuré dans le Dashboard. Aucun secret ne va dans le front.
+Les tests automatisés simulent Stripe ; un essai Checkout dans votre environnement
+Stripe reste nécessaire après configuration.
+
+- `POST /payments/checkout` : corps de commande + `checkoutKey` UUID v4. Les quantités
+  identiques sont regroupées, les prix sont calculés en base. Une même tentative
+  avec le même contenu réutilise sa commande et sa session. Un contenu différent
+  avec la même clé est refusé. Dix nouvelles tentatives par IP sur 15 minutes.
+- `GET /payments/checkout/:sessionId` : statut minimal sans coordonnées client ;
+  une session en attente est revérifiée auprès de Stripe. Le retour navigateur
+  ne constitue jamais une preuve de paiement.
+- `POST /payments/checkout/:sessionId/cancel` : expire une session ouverte avant
+  de remettre le stock. En cas d'incertitude réseau, le stock reste réservé.
+- `POST /payments/webhook` : corps brut et signature Stripe vérifiée. Les événements
+  répétés et reçus dans le désordre sont traités à partir de l'état actuel Stripe.
+  Le montant, la devise et l'identifiant de commande doivent correspondre en base.
+
+États : `UNPAID` réserve le stock, `PAID` confirme, `EXPIRED` annule et restitue
+une seule fois. La session expire après environ 31 minutes. Le webhook d'expiration
+ou le contrôle périodique restitue le stock ; l'API doit rester allumée et pouvoir
+joindre Stripe. Elle vérifie aussi les réservations échues au démarrage. Un paiement
+vérifié gagne sur une demande d'annulation : une commande payée conserve son stock
+consommé et ne peut pas être annulée sans remboursement.
+
+Checkout collecte l'adresse de livraison française dans Stripe. Elle est consultable
+dans le Dashboard Stripe et n'est pas encore copiée dans la base CONNECTA. Le bilan
+mensuel conserve sa définition : commandes en attente et confirmées, anciennes et
+de test, hors annulées. Il ne représente pas des encaissements réels.
