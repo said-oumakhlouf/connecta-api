@@ -10,6 +10,7 @@ export function configureCors(
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
+    credentials: true,
     methods: ['GET', 'POST'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     maxAge: 600,

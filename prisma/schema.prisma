@@ -70,3 +70,32 @@ model OrderItem {
   @@unique([orderId, productId])
   @@index([productId])
 }
+
+model Member {
+  id        String          @id @default(uuid())
+  email     String          @unique
+  createdAt DateTime        @default(now())
+  sessions  MemberSession[]
+}
+
+model MemberSession {
+  tokenHash String   @id
+  memberId  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  member    Member   @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([expiresAt])
+}
+
+model MemberLoginToken {
+  tokenHash String    @id
+  email     String
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([email, createdAt])
+  @@index([expiresAt])
+}

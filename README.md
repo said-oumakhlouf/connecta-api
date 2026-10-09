@@ -246,3 +246,71 @@ préservées ; leur IP reste inconnue et ne participe pas au quota historique.
 compris) à chaque produit. `stock` reste le stock disponible, déjà diminué des
 réservations. Les commandes payées ou annulées ne sont pas comptées comme
 réservations. Les anciennes commandes `LEGACY` gardent leur traitement manuel.
+
+## Espace membre — connexion et commandes
+
+La page frontend `/compte` permet de demander un lien email, de confirmer la
+connexion et de consulter uniquement les commandes de son email vérifié.
+Les anciennes commandes de cet email sont accessibles sans migration des montants
+ni des statuts. L’achat reste possible sans compte à cette étape ; les limites
+par email et IP restent celles du checkout. La livraison et les adresses membres
+seront ajoutées séparément.
+
+Appliquer `npx prisma migrate deploy`, puis `npx prisma generate` avant de
+redémarrer. La migration crée `Member`, `MemberSession`, `MemberLoginToken`,
+sans modifier les commandes ou les stocks.
+
+Pour tester sur le Mac, définir dans le `.env` backend :
+
+```env
+MEMBER_EMAIL_MODE=console
+CHECKOUT_SITE_URL=http://localhost:3000
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+```
+
+Depuis `/compte`, saisir l’email d’une commande. Le terminal du backend affiche
+un lien `http://localhost:3000/compte#connexion=...`. Ouvrir ce lien puis cliquer
+« Ouvrir mon espace ». Aucun email n’est envoyé dans ce mode, réservé aux requêtes
+locales et interdit en production. Ne pas partager ces liens de connexion.
+
+Pour un véritable envoi, utiliser [Resend](https://resend.com/docs/api-reference/emails/send-email)
+avec une clé privée et un expéditeur autorisé, uniquement dans le backend :
+
+```env
+MEMBER_EMAIL_MODE=resend
+RESEND_API_KEY=re_votre_cle_privee
+MEMBER_EMAIL_FROM=CONNECTA <connexion@votre-domaine.fr>
+```
+
+L’expéditeur et la clé doivent être configurés avant le premier envoi. Sans
+configuration, l’accès par email échoue avec `503`, sans compte créé.
+Le frontend ne reçoit jamais la clé email ni le jeton de session.
+
+Les liens aléatoires expirent après 15 minutes et sont à usage unique, y compris
+lors d’utilisations simultanées. Un GET ou un scanner de lien ne consomme pas le
+jeton : la connexion demande un POST explicite depuis une origine autorisée.
+Les jetons de lien et de session sont stockés hachés. La session dure 8 heures,
+persiste en base après redémarrage et est révoquée à la déconnexion.
+Le cookie est HttpOnly, SameSite=Lax, Secure en production et limité à `/members`.
+En local, utiliser le même hôte (`localhost` ou `127.0.0.1`) pour le front et l’API.
+En production, front et API doivent partager le même site (ex. sous-domaines
+HTTPS d’un même domaine) pour ce cookie ; configurer explicitement CORS_ORIGINS.
+Les POST membres vérifient aussi l’Origin, contre les requêtes d’autres sites.
+
+Routes :
+- POST `/members/login` : email uniquement, limite 5 demandes par IP et 3 liens
+  par email sur 15 minutes. La limite IP est en mémoire par instance ; la limite
+  email repose sur les tokens enregistrés en base.
+- POST `/members/verify` : lien à usage unique, cookie HttpOnly.
+- GET `/members/me` : email vérifié et échéance de session.
+- GET `/members/orders?page=1` : pagination 20, historique de cet email seulement,
+  sans clés de checkout, IP ou données d’autres clients.
+- POST `/members/orders/:id/resume` : reprendre sa réservation UNPAID,
+  sans créer de commande ni déduire à nouveau le stock.
+- POST `/members/orders/:id/cancel` : annuler sa réservation UNPAID ; Stripe
+  vérifié avant restitution du stock, répétition sans double restitution.
+- POST `/members/logout` : supprimer la session et le cookie.
+
+Les commandes déjà payées ne peuvent ni être repayées ni annulées par ce bouton.
+Les remboursements et le suivi transporteur ne sont pas encore implémentés.
+Les tables de sessions/tokens échus pourront faire l’objet d’une purge périodique.
