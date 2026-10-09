@@ -253,6 +253,38 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       ).toMatchObject({ stock: 18, reservedUnits: 0 });
     });
 
+    it('removes verified payments from the quota while retaining unpaid and cancelled reservations', async () => {
+      const cancelled = await checkout({
+        ...body(),
+        customerEmail: `cancelled-${email}`,
+      }).expect(200);
+      await request(app.getHttpServer())
+        .post(`/payments/checkout/${cancelled.body.sessionId}/cancel`)
+        .expect(200);
+      await checkout({ ...body(), customerEmail: `waiting-${email}` }).expect(
+        200,
+      );
+      const value = body();
+      const toPay = await checkout(value).expect(200);
+      await checkout({ ...body(), customerEmail: `blocked-${email}` }).expect(
+        429,
+      );
+      // An open reservation can still be resumed even when the quota is full.
+      await checkout(value).expect(200);
+      const session = sessions.get(toPay.body.sessionId)!;
+      session.status = 'complete';
+      session.payment_status = 'paid';
+      expect((await event(session)).status).toBe(200);
+      const next = await checkout().expect(200);
+      expect(await stock()).toBe(14);
+      // Cancelling the next order restores its stock but keeps it in the abuse quota.
+      await request(app.getHttpServer())
+        .post(`/payments/checkout/${next.body.sessionId}/cancel`)
+        .expect(200);
+      await checkout().expect(429);
+      expect(await stock()).toBe(16);
+    });
+
     it('limits new reservations from the same connection even with different emails and survives service restart', async () => {
       for (let index = 0; index < 3; index++) {
         const value = { ...body(), customerEmail: `${index}-${email}` };

@@ -228,8 +228,9 @@ qu’une réservation `UNPAID` à la fois. Une réservation échue mais encore
 non vérifiée reste bloquante : le stock n’est libéré qu’après contrôle Stripe.
 Le paiement vérifié ou l’annulation libère cette limite par email.
 
-Maximum 3 nouvelles réservations par adresse IP sur une fenêtre glissante de
-31 minutes, même après annulation ou redémarrage. Les reprises avec la même clé
+Maximum 3 réservations non payées (`UNPAID`) ou annulées (`EXPIRED`) par
+adresse IP sur une fenêtre glissante de 31 minutes, même après redémarrage.
+Les paiements vérifiés (`PAID`) sont exclus et libèrent une place dans le quota. Les reprises avec la même clé
 de tentative ne consomment pas de quota. Les requêtes échouées n’enregistrent
 pas de nouvelle commande ; un second frein en mémoire limite 10 tentatives
 en 15 minutes. L’IP est enregistrée sous forme de SHA-256 interne, jamais renvoyée

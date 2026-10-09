@@ -62,6 +62,7 @@ export class OrdersService {
             const recent = await tx.order.count({
               where: {
                 checkoutIpHash: checkout.checkoutIpHash,
+                paymentStatus: { in: ['UNPAID', 'EXPIRED'] },
                 createdAt: { gte: new Date(Date.now() - 31 * 60 * 1000) },
               },
             });
@@ -70,7 +71,7 @@ export class OrdersService {
                 {
                   code: 'RESERVATION_RATE_LIMIT',
                   message:
-                    'Maximum 3 nouvelles réservations en 31 minutes depuis cette connexion.',
+                    'Maximum 3 réservations non payées ou annulées en 31 minutes depuis cette connexion.',
                 },
                 429,
               );
