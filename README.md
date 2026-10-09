@@ -105,8 +105,8 @@ route renvoie `503` en production ou dès que `STRIPE_SECRET_KEY` est renseigné
 ```
 
 Réponse `201` : commande avec identifiant, statut `PENDING`, montant total et lignes.
-Les quantités sont des entiers de 1 à 100, avec au maximum 100 lignes.
-Les lignes répétées sont regroupées (maximum 100 unités par produit).
+Les quantités sont des entiers de 1 à 10, avec au maximum 100 lignes.
+Les lignes répétées sont regroupées (maximum 10 unités au total par commande).
 
 Les montants sont des entiers **en centimes** : `3500 = 35 €`.
 Vérifier cette convention pour les produits déjà présents en base : aucune migration ne convertit leurs prix.
@@ -219,3 +219,29 @@ Checkout collecte l'adresse de livraison française dans Stripe. Elle est consul
 dans le Dashboard Stripe et n'est pas encore copiée dans la base CONNECTA. Le bilan
 mensuel conserve sa définition : commandes en attente et confirmées, anciennes et
 de test, hors annulées. Il ne représente pas des encaissements réels.
+
+## Limites des réservations
+
+Le panier entier est limité à 10 unités (5 packs Duo), y compris les lignes
+répétées et les produits différents. Une adresse email normalisée ne peut avoir
+qu’une réservation `UNPAID` à la fois. Une réservation échue mais encore
+non vérifiée reste bloquante : le stock n’est libéré qu’après contrôle Stripe.
+Le paiement vérifié ou l’annulation libère cette limite par email.
+
+Maximum 3 nouvelles réservations par adresse IP sur une fenêtre glissante de
+31 minutes, même après annulation ou redémarrage. Les reprises avec la même clé
+de tentative ne consomment pas de quota. Les requêtes échouées n’enregistrent
+pas de nouvelle commande ; un second frein en mémoire limite 10 tentatives
+en 15 minutes. L’IP est enregistrée sous forme de SHA-256 interne, jamais renvoyée
+au front. La connexion peut être partagée par plusieurs clients (même réseau).
+Les transactions `Serializable` et les reprises limitées sur `P2034` protègent
+les limites et le stock contre les demandes simultanées.
+
+Appliquer la migration additive avec `npx prisma migrate deploy`, puis
+`npx prisma generate` et redémarrer le backend. Les commandes existantes sont
+préservées ; leur IP reste inconnue et ne participe pas au quota historique.
+
+`GET /admin/products` ajoute `reservedUnits` (uniquement `UNPAID`, tous délais
+compris) à chaque produit. `stock` reste le stock disponible, déjà diminué des
+réservations. Les commandes payées ou annulées ne sont pas comptées comme
+réservations. Les anciennes commandes `LEGACY` gardent leur traitement manuel.

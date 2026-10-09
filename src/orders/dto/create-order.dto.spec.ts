@@ -35,7 +35,7 @@ describe('CreateOrderDto', () => {
     { ...valid, items: [{ productId: 1, quantity: -1 }] },
     { ...valid, items: [{ productId: 1, quantity: 1.5 }] },
     { ...valid, items: [{ productId: 1, quantity: '2' }] },
-    { ...valid, items: [{ productId: 1, quantity: 101 }] },
+    { ...valid, items: [{ productId: 1, quantity: 11 }] },
     { ...valid, items: [{ productId: 1, quantity: 2, unitPrice: 1 }] },
     { ...valid, total: 1 },
   ])('rejects malformed input or client-supplied prices: %j', async (body) => {

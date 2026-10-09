@@ -71,6 +71,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         order = await this.orders.create(normalized, {
           checkoutKey: dto.checkoutKey,
           checkoutFingerprint,
+          checkoutIpHash: createHash('sha256').update(ip).digest('hex'),
           reservedUntil: new Date(Date.now() + 31 * 60 * 1000),
         });
       } catch (error) {

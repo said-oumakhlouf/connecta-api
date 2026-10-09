@@ -48,8 +48,11 @@ model Order {
   checkoutSessionId   String?       @unique
   reservedUntil       DateTime?
   paidAt              DateTime?
+  checkoutIpHash      String?
 
   @@index([paymentStatus, reservedUntil])
+  @@index([customerEmail, paymentStatus])
+  @@index([checkoutIpHash, createdAt])
 }
 
 model OrderItem {

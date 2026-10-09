@@ -62,10 +62,27 @@ export class AdminService {
   }
 
   products() {
-    return this.prisma.product.findMany({
-      orderBy: { id: 'asc' },
-      select: productSelect,
-    });
+    return this.prisma.$transaction(
+      async (tx) => {
+        const products = await tx.product.findMany({
+          orderBy: { id: 'asc' },
+          select: productSelect,
+        });
+        const reservations = await tx.orderItem.groupBy({
+          by: ['productId'],
+          where: { order: { paymentStatus: 'UNPAID' } },
+          _sum: { quantity: true },
+        });
+        const reserved = new Map(
+          reservations.map((row) => [row.productId, row._sum.quantity ?? 0]),
+        );
+        return products.map((product) => ({
+          ...product,
+          reservedUnits: reserved.get(product.id) ?? 0,
+        }));
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
   }
 
   analytics(month: string) {

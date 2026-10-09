@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import type { INestApplication } from '@nestjs/common';
@@ -127,7 +127,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
     });
 
     afterEach(async () => {
-      await prisma.order.deleteMany({ where: { customerEmail: email } });
+      await prisma.order.deleteMany({
+        where: { items: { some: { productId } } },
+      });
       await prisma.product.delete({ where: { id: productId } });
       await app.close();
     });
@@ -188,6 +190,136 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       );
       expect(await stock()).toBe(18);
     });
+
+    it('enforces ten units across duplicate lines and accepts the ten-unit boundary', async () => {
+      for (const items of [
+        [{ productId, quantity: 11 }],
+        [
+          { productId, quantity: 6 },
+          { productId, quantity: 5 },
+        ],
+      ]) {
+        await checkout({ ...body(), items }).expect(400);
+        expect(await stock()).toBe(20);
+      }
+      await checkout({
+        ...body(),
+        items: [{ productId, quantity: 10 }],
+      }).expect(200);
+      expect(await stock()).toBe(10);
+    });
+
+    it('blocks another unpaid reservation for a normalized email, then permits a new one after cancellation', async () => {
+      const first = await checkout().expect(200);
+      const blocked = await checkout({
+        ...body(),
+        customerEmail: `  ${email.toUpperCase()}  `,
+      }).expect(409);
+      expect(blocked.body.code).toBe('ACTIVE_RESERVATION');
+      expect(await stock()).toBe(18);
+      await request(app.getHttpServer())
+        .post(`/payments/checkout/${first.body.sessionId}/cancel`)
+        .expect(200);
+      await checkout().expect(200);
+      expect(await stock()).toBe(18);
+    });
+
+    it('allows a new order after verified payment and reports only unpaid units as reserved', async () => {
+      const first = await checkout().expect(200);
+      const readProducts = () =>
+        request(app.getHttpServer())
+          .get('/admin/products')
+          .set('Authorization', authorization)
+          .expect(200);
+      const before = await readProducts();
+      expect(
+        before.body.find((p: { id: number }) => p.id === productId),
+      ).toMatchObject({ stock: 18, reservedUnits: 2 });
+      const session = sessions.get(first.body.sessionId)!;
+      session.status = 'complete';
+      session.payment_status = 'paid';
+      expect((await event(session)).status).toBe(200);
+      const paid = await readProducts();
+      expect(
+        paid.body.find((p: { id: number }) => p.id === productId),
+      ).toMatchObject({ stock: 18, reservedUnits: 0 });
+      const second = await checkout().expect(200);
+      await request(app.getHttpServer())
+        .post(`/payments/checkout/${second.body.sessionId}/cancel`)
+        .expect(200);
+      const cancelled = await readProducts();
+      expect(
+        cancelled.body.find((p: { id: number }) => p.id === productId),
+      ).toMatchObject({ stock: 18, reservedUnits: 0 });
+    });
+
+    it('limits new reservations from the same connection even with different emails and survives service restart', async () => {
+      for (let index = 0; index < 3; index++) {
+        const value = { ...body(), customerEmail: `${index}-${email}` };
+        const response = await checkout(value).expect(200);
+        await checkout(value).expect(200); // Idempotent retries never consume the quota.
+        await request(app.getHttpServer())
+          .post(`/payments/checkout/${response.body.sessionId}/cancel`)
+          .expect(200);
+      }
+      await checkout({ ...body(), customerEmail: `fourth-${email}` }).expect(
+        429,
+      );
+      const previous = await prisma.order.findFirstOrThrow({
+        where: { items: { some: { productId } } },
+      });
+      const sourceIp = ['::1', '127.0.0.1', '::ffff:127.0.0.1'].find(
+        (ip) =>
+          createHash('sha256').update(ip).digest('hex') ===
+          previous.checkoutIpHash,
+      );
+      expect(sourceIp).toBeDefined();
+      const restarted = new PaymentsService(
+        prisma,
+        app.get(
+          (await import('../src/orders/orders.service.js')).OrdersService,
+        ),
+        app.get(StripeGateway),
+      );
+      await expect(restarted.checkout(body(), sourceIp!)).rejects.toMatchObject(
+        { status: 429 },
+      );
+      expect(await stock()).toBe(20);
+      await prisma.order.updateMany({
+        where: { items: { some: { productId } } },
+        data: { createdAt: new Date(Date.now() - 32 * 60 * 1000) },
+      });
+      await checkout().expect(200);
+    });
+
+    it.skipIf(process.env.TEST_SERIAL_DATABASE === 'true')(
+      'allows only one simultaneous unpaid reservation for an email with different checkout keys',
+      async () => {
+        const results = await Promise.all([checkout(), checkout()]);
+        expect(results.map((result) => result.status).sort()).toEqual([
+          200, 409,
+        ]);
+        expect(await stock()).toBe(18);
+        expect(
+          await prisma.order.count({ where: { customerEmail: email } }),
+        ).toBe(1);
+      },
+    );
+
+    it.skipIf(process.env.TEST_SERIAL_DATABASE === 'true')(
+      'enforces the connection quota during simultaneous reservations with different emails',
+      async () => {
+        const results = await Promise.all(
+          Array.from({ length: 5 }, (_, index) =>
+            checkout({ ...body(), customerEmail: `${index}-${email}` }),
+          ),
+        );
+        expect(results.map((result) => result.status).sort()).toEqual([
+          200, 200, 200, 429, 429,
+        ]);
+        expect(await stock()).toBe(14);
+      },
+    );
 
     it('rejects forged prices, invalid keys and manual unpaid orders when Stripe is configured', async () => {
       await checkout({ ...body(), total: 1 } as ReturnType<typeof body>).expect(

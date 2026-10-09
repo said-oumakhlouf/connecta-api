@@ -323,16 +323,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       expect(await prisma.order.count({ where: { customerEmail } })).toBe(0);
     });
 
-    it('rejects aggregate quantities above 100', async () => {
+    it('rejects aggregate quantities above 10', async () => {
       await request(app.getHttpServer())
         .post('/orders')
         .send(
           body([
-            { productId: productIds[0], quantity: 60 },
-            { productId: productIds[0], quantity: 60 },
+            { productId: productIds[0], quantity: 6 },
+            { productId: productIds[0], quantity: 6 },
           ]),
         )
         .expect(400);
+    });
+
+    it('limits the entire mixed-product basket to ten units', async () => {
+      await request(app.getHttpServer())
+        .post('/orders')
+        .send(
+          body([
+            { productId: productIds[0], quantity: 6 },
+            { productId: productIds[1], quantity: 5 },
+          ]),
+        )
+        .expect(400);
+      expect(await prisma.order.count({ where: { customerEmail } })).toBe(0);
     });
 
     it('rejects a total that would overflow a database integer', async () => {
