@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { ShippingAddressDto } from '../shipping/shipping.dto.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PaymentsService } from '../payments/payments.service.js';
 
@@ -24,6 +25,13 @@ export class MemberOrdersService {
         take: 20,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         select: {
+          shippingAddress: true,
+          shippingFee: true,
+          fulfillmentStatus: true,
+          trackingCarrier: true,
+          trackingNumber: true,
+          shippedAt: true,
+          deliveredAt: true,
           id: true,
           customerName: true,
           status: true,
@@ -72,6 +80,9 @@ export class MemberOrdersService {
           quantity,
         })),
         checkoutKey: order.checkoutKey,
+        // Old reservations keep their original fingerprint and amount.
+        shippingAddress: order.shippingAddress as unknown as ShippingAddressDto,
+        expectedShippingFee: order.shippingFee,
       },
       ip,
     );

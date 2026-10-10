@@ -1,3 +1,4 @@
+import { ShippingService } from '../shipping/shipping.service.js';
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module.js';
 import { OrdersModule } from '../orders/orders.module.js';
@@ -7,7 +8,7 @@ import { StripeGateway } from './stripe.gateway.js';
 
 @Module({
   imports: [PrismaModule, OrdersModule],
-  providers: [StripeGateway, PaymentsService],
+  providers: [StripeGateway, PaymentsService, ShippingService],
   controllers: [PaymentsController],
   exports: [PaymentsService],
 })

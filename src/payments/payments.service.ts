@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -13,6 +14,7 @@ import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { OrdersService } from '../orders/orders.service.js';
 import { StripeGateway } from './stripe.gateway.js';
+import { ShippingService } from '../shipping/shipping.service.js';
 import type { CheckoutDto } from './checkout.dto.js';
 import type { Order } from '../generated/prisma/client.js';
 
@@ -31,6 +33,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly orders: OrdersService,
     private readonly stripe: StripeGateway,
+    private readonly shipping: ShippingService,
   ) {}
 
   async onModuleInit() {
@@ -52,6 +55,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         (quantities.get(item.productId) ?? 0) + item.quantity,
       );
     const normalized = {
+      ...(dto.shippingAddress ? { shippingAddress: this.shipping.address(dto.shippingAddress) } : {}),
       customerName: dto.customerName.trim(),
       customerEmail: dto.customerEmail.trim().toLowerCase(),
       items: [...quantities]
@@ -66,9 +70,15 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       include: { items: true },
     });
     if (!order) {
+      if (!normalized.shippingAddress) throw new BadRequestException('Adresse de livraison obligatoire.');
+      const shippingFee = this.shipping.fee(normalized.shippingAddress.country);
+      if (dto.expectedShippingFee !== shippingFee)
+        throw new ConflictException({ code: 'SHIPPING_RATE_CHANGED', message: 'Le tarif de livraison a changé. Actualisez le panier.' });
       this.limit(ip);
       try {
         order = await this.orders.create(normalized, {
+          shippingAddress: normalized.shippingAddress,
+          shippingFee,
           checkoutKey: dto.checkoutKey,
           checkoutFingerprint,
           checkoutIpHash: createHash('sha256').update(ip).digest('hex'),
@@ -112,8 +122,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
               expires_at: Math.floor(order.reservedUntil.getTime() / 1000),
               success_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?session_id={CHECKOUT_SESSION_ID}`,
               cancel_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?retour=1`,
-              shipping_address_collection: { allowed_countries: ['FR'] },
-              line_items: order.items.map((item) => ({
+
+              line_items: [...order.items.map((item) => ({
                 quantity: 1,
                 price_data: {
                   currency: 'eur',
@@ -122,7 +132,11 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
                     name: `${item.productName} · ${item.quantity} unité(s)`,
                   },
                 },
-              })),
+              })), ...(order.shippingFee > 0 ? [{
+                quantity: 1,
+                price_data: { currency: 'eur', unit_amount: order.shippingFee,
+                  product_data: { name: 'Livraison' } },
+              }] : [])],
             },
             { idempotencyKey: `connecta-checkout-${order.checkoutKey}` },
           );
@@ -160,6 +174,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       sessionId: session.id,
       url: session.url,
       expiresAt: new Date(session.expires_at * 1000).toISOString(),
+      shippingFee: order.shippingFee,
       total: order.total,
       testMode: true,
     };
@@ -278,6 +293,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     });
     return {
       orderId: order.id,
+      shippingFee: order.shippingFee,
       total: order.total,
       paymentStatus: order.paymentStatus,
       expiresAt: order.reservedUntil?.toISOString(),

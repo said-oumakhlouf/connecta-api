@@ -18,6 +18,7 @@ import { AdminAuthService } from './admin-auth.service.js';
 import { AdminService } from './admin.service.js';
 import { AdminGuard } from './admin.guard.js';
 import {
+  UpdateFulfillmentDto,
   AdminLoginDto,
   AdminOrdersQueryDto,
   RestockProductDto,
@@ -28,6 +29,7 @@ import {
 
 const validate = (
   expectedType:
+    | typeof UpdateFulfillmentDto
     | typeof AdminLoginDto
     | typeof AdminOrdersQueryDto
     | typeof RestockProductDto
@@ -93,6 +95,16 @@ export class AdminController {
     @Body(validate(UpdateOrderStatusDto)) dto: UpdateOrderStatusDto,
   ) {
     return this.admin.updateOrderStatus(id, dto.status);
+  }
+
+  @Post('orders/:id/fulfillment')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  updateFulfillment(
+    @Param(validate(OrderIdDto)) { id }: OrderIdDto,
+    @Body(validate(UpdateFulfillmentDto)) dto: UpdateFulfillmentDto,
+  ) {
+    return this.admin.updateFulfillment(id, dto);
   }
 
   @Post('products/:id/restock')

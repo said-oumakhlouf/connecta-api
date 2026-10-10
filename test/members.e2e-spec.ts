@@ -68,6 +68,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
     };
     config = new ConfigService({
       NODE_ENV: 'test',
+      SHIPPING_FR_CENTS: '0',
       CORS_ORIGINS: origin,
       CHECKOUT_SITE_URL: origin,
     });
@@ -138,6 +139,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
         customerName: 'Member customer',
         customerEmail: address,
         items: [{ productId, quantity: 2 }],
+        shippingAddress: { country: 'FR', line1: '12 rue du Test', line2: '', city: 'Paris', postalCode: '75001', region: '' },
+        expectedShippingFee: 0,
         checkoutKey: randomUUID(),
       },
       '203.0.113.1',
@@ -270,6 +273,19 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
       .expect(429);
   });
 
+  it('shows the shipment tracking to its verified owner', async () => {
+    const mine = await order();
+    mine.session.status = 'complete'; mine.session.payment_status = 'paid';
+    await app.get(PaymentsService).applySession(mine.session, mine);
+    const { AdminService } = await import('../src/admin/admin.service.js');
+    await app.get(AdminService).updateFulfillment(mine.id, { status: 'PREPARING' });
+    await app.get(AdminService).updateFulfillment(mine.id, { status: 'SHIPPED', trackingCarrier: 'Colissimo', trackingNumber: 'TEST123456' });
+    const cookie = await login();
+    const response = await request(app.getHttpServer()).get('/members/orders').set('Cookie', cookie).expect(200);
+    expect(response.body.orders[0]).toMatchObject({ fulfillmentStatus: 'SHIPPED', trackingCarrier: 'Colissimo', trackingNumber: 'TEST123456', shippingAddress: mine.shippingAddress });
+    expect(response.body.orders[0].shippedAt).toBeTruthy();
+  });
+
   it('lists only the verified email orders including old orders, excludes internal credentials and paginates', async () => {
     const foreign = `foreign-${email}`;
     const mine = await order();
@@ -308,6 +324,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
     const rows = [...first.body.orders, ...second.body.orders];
     expect(rows.some((row: { id: string }) => row.id === mine.id)).toBe(true);
     expect(rows.some((row: { id: string }) => row.id === other.id)).toBe(false);
+    expect(rows.find((row: { id: string }) => row.id === mine.id).shippingAddress).toEqual(mine.shippingAddress);
+    expect(rows.find((row: { id: string }) => row.id === mine.id).shippingFee).toBe(0);
     expect(JSON.stringify(rows)).not.toContain('checkoutKey');
     expect(JSON.stringify(rows)).not.toContain('checkoutIpHash');
     await request(app.getHttpServer())

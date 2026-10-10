@@ -13,6 +13,7 @@ import {
   type RawBodyRequest,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { ShippingService } from '../shipping/shipping.service.js';
 import { CheckoutDto } from './checkout.dto.js';
 import { PaymentsService } from './payments.service.js';
 import { StripeGateway } from './stripe.gateway.js';
@@ -22,7 +23,12 @@ export class PaymentsController {
   constructor(
     private readonly payments: PaymentsService,
     private readonly stripe: StripeGateway,
+    private readonly shipping: ShippingService,
   ) {}
+
+  @Get('shipping')
+  @Header('Cache-Control', 'no-store')
+  shippingOptions() { return this.shipping.options(); }
 
   @Post('checkout')
   @HttpCode(200)

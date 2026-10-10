@@ -33,6 +33,13 @@ enum PaymentStatus {
   EXPIRED
 }
 
+enum FulfillmentStatus {
+  UNFULFILLED
+  PREPARING
+  SHIPPED
+  DELIVERED
+}
+
 model Order {
   id                  String        @id @default(uuid())
   customerName        String
@@ -48,6 +55,13 @@ model Order {
   checkoutSessionId   String?       @unique
   reservedUntil       DateTime?
   paidAt              DateTime?
+  shippingAddress     Json?
+  shippingFee         Int @default(0)
+  fulfillmentStatus   FulfillmentStatus @default(UNFULFILLED)
+  trackingCarrier     String?
+  trackingNumber      String?
+  shippedAt           DateTime?
+  deliveredAt         DateTime?
   checkoutIpHash      String?
 
   @@index([paymentStatus, reservedUntil])
