@@ -18,6 +18,8 @@ export class OrdersService {
   async create(
     dto: CreateOrderDto,
     checkout?: {
+      shippingAddress?: Prisma.InputJsonObject;
+      shippingFee?: number;
       checkoutKey: string;
       checkoutFingerprint: string;
       reservedUntil: Date;
@@ -97,7 +99,7 @@ export class OrdersService {
               ...calculateLinePrice(product.price, quantity, product.duoPrice),
             };
           });
-          const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+          const total = items.reduce((sum, item) => sum + item.lineTotal, 0) + (checkout?.shippingFee ?? 0);
           if (
             items.some(
               (item) =>

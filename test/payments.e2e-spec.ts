@@ -8,6 +8,7 @@ import Stripe from 'stripe';
 import { AppModule } from '../src/app.module.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { StripeGateway } from '../src/payments/stripe.gateway.js';
+import { ShippingService } from '../src/shipping/shipping.service.js';
 import { PaymentsService } from '../src/payments/payments.service.js';
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)(
@@ -94,6 +95,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           new ConfigService({
             ADMIN_PASSWORD: 'local-admin-password-only',
             STRIPE_SECRET_KEY: 'sk_test_fixture',
+            SHIPPING_FR_CENTS: '0',
           }),
         )
         .overrideProvider(StripeGateway)
@@ -135,6 +137,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
     });
 
     const body = (checkoutKey: string = randomUUID()) => ({
+      shippingAddress: { country: 'FR' as const, line1: '12 rue du Test', line2: '', city: 'Paris', postalCode: '75001', region: '' },
+      expectedShippingFee: 0,
       customerName: 'Checkout Client',
       customerEmail: email,
       items: [{ productId, quantity: 2 }],
@@ -168,6 +172,82 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         )
         .send(payload);
     };
+
+    it('charges server shipping once, freezes existing quotes and binds retries to the address', async () => {
+      const config = app.get(ConfigService);
+      config.set('SHIPPING_FR_CENTS', '590');
+      const quote = await request(app.getHttpServer()).get('/payments/shipping').expect(200);
+      expect(quote.body.destinations.find((d: { country: string }) => d.country === 'FR').fee).toBe(590);
+      const value = { ...body(), expectedShippingFee: 590 };
+      await checkout({ ...value, expectedShippingFee: 0 }).expect(409);
+      expect(await stock()).toBe(20);
+      const result = await checkout(value).expect(200);
+      expect(result.body).toMatchObject({ total: 6590, shippingFee: 590 });
+      const order = await prisma.order.findUniqueOrThrow({ where: { checkoutSessionId: result.body.sessionId } });
+      expect(order.shippingAddress).toEqual(value.shippingAddress);
+      expect(order.shippingFee).toBe(590);
+      expect(sessions.get(result.body.sessionId)!.amount_total).toBe(6590);
+      expect(sdk.checkout.sessions.create.mock.calls[0][0].shipping_address_collection).toBeUndefined();
+      config.set('SHIPPING_FR_CENTS', '1200');
+      expect((await checkout(value).expect(200)).body.total).toBe(6590);
+      await checkout({ ...value, shippingAddress: { ...value.shippingAddress, line1: '99 autre rue' } }).expect(409);
+      expect(await stock()).toBe(18);
+      const session = sessions.get(result.body.sessionId)!;
+      session.status = 'complete'; session.payment_status = 'paid';
+      session.amount_total = 6000;
+      expect((await event(session)).status).toBe(409);
+      session.amount_total = 6590;
+      expect((await event(session)).status).toBe(200);
+      expect(await stock()).toBe(18);
+      const publicStatus = await request(app.getHttpServer()).get(`/payments/checkout/${session.id}`).expect(200);
+      expect(publicStatus.body.shippingAddress).toBeUndefined();
+      const analytics = await request(app.getHttpServer()).get(`/admin/analytics?month=${new Date().toISOString().slice(0,7)}`).set('Authorization', authorization).expect(200);
+      expect(analytics.body.products.find((p: { productId: number }) => p.productId === productId).amount).toBe(6000);
+    });
+
+    it.each([
+      ['BE', '1000', '', 990], ['CA', 'h2x1y4', 'QC', 2490],
+    ])('charges %s shipping and rejects unsupported destination data before reserving stock', async (country, postalCode, region, fee) => {
+      const payload = { ...body(), shippingAddress: { ...body().shippingAddress, country, postalCode, region }, expectedShippingFee: fee };
+      const result = await request(app.getHttpServer()).post('/payments/checkout').send(payload).expect(200);
+      expect(result.body.total).toBe(6000 + Number(fee));
+      await request(app.getHttpServer()).post(`/payments/checkout/${result.body.sessionId}/cancel`).expect(200);
+      expect(await stock()).toBe(20);
+      for (const shippingAddress of [{ ...payload.shippingAddress, country: 'US' }, { ...payload.shippingAddress, postalCode: 'bad' }, null])
+        await request(app.getHttpServer()).post('/payments/checkout').send({ ...payload, checkoutKey: randomUUID(), shippingAddress }).expect(400);
+      expect(await stock()).toBe(20);
+    });
+
+    it('allows only paid addressed orders through preparation, tracked shipment and delivery; retries are safe', async () => {
+      const result = await checkout().expect(200);
+      const session = sessions.get(result.body.sessionId)!;
+      const id = session.metadata!.orderId;
+      const update = (dto: object) => request(app.getHttpServer()).post(`/admin/orders/${id}/fulfillment`).set('Authorization', authorization).send(dto);
+      await request(app.getHttpServer()).post(`/admin/orders/${id}/fulfillment`).send({ status: 'PREPARING' }).expect(401);
+      await update({ status: 'PREPARING' }).expect(409);
+      session.status = 'complete'; session.payment_status = 'paid';
+      expect((await event(session)).status).toBe(200);
+      await update({ status: 'DELIVERED' }).expect(409);
+      const preparing = await update({ status: 'PREPARING' }).expect(200);
+      expect(preparing.body.fulfillmentStatus).toBe('PREPARING');
+      await update({ status: 'PREPARING' }).expect(200);
+      await update({ status: 'SHIPPED' }).expect(400);
+      await update({ status: 'SHIPPED', trackingCarrier: 'Colissimo', trackingNumber: 'javascript:alert(1)' }).expect(400);
+      const shipment = { status: 'SHIPPED', trackingCarrier: 'Colissimo', trackingNumber: 'TEST12345678' };
+      const shipped = await update(shipment).expect(200);
+      expect(shipped.body.shippedAt).toBeTruthy();
+      expect((await update(shipment).expect(200)).body.shippedAt).toBe(shipped.body.shippedAt);
+      await update({ ...shipment, trackingNumber: 'OTHER123' }).expect(409);
+      await update({ status: 'PREPARING' }).expect(409);
+      const delivered = await update({ status: 'DELIVERED' }).expect(200);
+      expect(delivered.body.deliveredAt).toBeTruthy();
+      expect((await update({ status: 'DELIVERED' }).expect(200)).body.deliveredAt).toBe(delivered.body.deliveredAt);
+      expect(await stock()).toBe(18);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id } })).paymentStatus).toBe('PAID');
+      // Historical paid reservations have no shipping address and must not be dispatched blindly.
+      await prisma.order.update({ where: { id }, data: { shippingAddress: (await import('../src/generated/prisma/client.js')).Prisma.DbNull, fulfillmentStatus: 'UNFULFILLED' } });
+      await update({ status: 'PREPARING' }).expect(409);
+    });
 
     it('reserves two units at server Duo prices and reuses the same reservation on retries', async () => {
       const value = body();
@@ -312,6 +392,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           (await import('../src/orders/orders.service.js')).OrdersService,
         ),
         app.get(StripeGateway),
+        app.get(ShippingService),
       );
       await expect(restarted.checkout(body(), sourceIp!)).rejects.toMatchObject(
         { status: 429 },
