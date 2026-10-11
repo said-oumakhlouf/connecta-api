@@ -10,6 +10,8 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { StripeGateway } from '../src/payments/stripe.gateway.js';
 import { ShippingService } from '../src/shipping/shipping.service.js';
 import { PaymentsService } from '../src/payments/payments.service.js';
+import { OrdersService } from '../src/orders/orders.service.js';
+import type { ShippingAddressDto } from '../src/shipping/shipping.dto.js';
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)(
   'Stripe checkout (e2e, simulated Stripe)',
@@ -216,6 +218,127 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       for (const shippingAddress of [{ ...payload.shippingAddress, country: 'US' }, { ...payload.shippingAddress, postalCode: 'bad' }, null])
         await request(app.getHttpServer()).post('/payments/checkout').send({ ...payload, checkoutKey: randomUUID(), shippingAddress }).expect(400);
       expect(await stock()).toBe(20);
+    });
+
+    // Reservation created before shipping support: no stored address, fingerprint without it.
+    const legacyReservation = async () => {
+      const normalized = {
+        customerName: 'Legacy Client',
+        customerEmail: email,
+        items: [{ productId, quantity: 2 }],
+      };
+      const checkoutKey = randomUUID();
+      const order = await app.get(OrdersService).create(normalized, {
+        checkoutKey,
+        checkoutFingerprint: createHash('sha256')
+          .update(JSON.stringify(normalized))
+          .digest('hex'),
+        checkoutIpHash: createHash('sha256').update('203.0.113.7').digest('hex'),
+        reservedUntil: new Date(Date.now() + 30 * 60 * 1000),
+      });
+      return { order, normalized, checkoutKey };
+    };
+    const stripeAddress = (postal_code = '69002') => ({
+      shipping_details: {
+        name: 'Legacy Client',
+        address: {
+          country: 'FR',
+          line1: '  4 place Bellecour ',
+          line2: null,
+          city: 'Lyon',
+          postal_code,
+          state: null,
+        },
+      },
+    });
+    const update = (id: string, dto: object) =>
+      request(app.getHttpServer())
+        .post(`/admin/orders/${id}/fulfillment`)
+        .set('Authorization', authorization)
+        .send(dto);
+
+    it('stores the Stripe-collected address of a resumed pre-shipping reservation once paid, with historical amounts', async () => {
+      const { order, normalized, checkoutKey } = await legacyReservation();
+      const resumed = await app.get(PaymentsService).checkout(
+        {
+          ...normalized,
+          checkoutKey,
+          shippingAddress: null as unknown as ShippingAddressDto,
+          expectedShippingFee: 0,
+        },
+        '203.0.113.7',
+      );
+      expect(resumed).toMatchObject({ total: 6000, shippingFee: 0 });
+      const params = sdk.checkout.sessions.create.mock.calls.at(-1)![0];
+      expect(params.shipping_address_collection).toEqual({ allowed_countries: ['FR'] });
+      const session = sessions.get(resumed.sessionId)!;
+      Object.assign(session, {
+        status: 'complete',
+        payment_status: 'paid',
+        collected_information: stripeAddress(),
+      });
+      await update(order.id, { status: 'PREPARING' }).expect(409);
+      expect((await event(session)).status).toBe(200);
+      const paid = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(paid).toMatchObject({
+        paymentStatus: 'PAID',
+        total: 6000,
+        shippingFee: 0,
+        shippingAddress: { country: 'FR', line1: '4 place Bellecour', line2: '', city: 'Lyon', postalCode: '69002', region: '' },
+      });
+      expect(await stock()).toBe(18);
+      await update(order.id, { status: 'PREPARING' }).expect(200);
+      // A later event never overwrites the stored address.
+      Object.assign(session, { collected_information: stripeAddress('75011') });
+      expect((await event(session)).status).toBe(200);
+      expect(
+        (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).shippingAddress,
+      ).toMatchObject({ postalCode: '69002' });
+    });
+
+    it('fills the address of a Stripe session created before the shipping release, via the server status check', async () => {
+      const { order } = await legacyReservation();
+      // Session opened by the previous release (old API field, address collected by Stripe).
+      const id = `cs_test_${randomUUID().replaceAll('-', '')}`;
+      sessions.set(id, {
+        id,
+        livemode: false,
+        mode: 'payment',
+        currency: 'eur',
+        metadata: { orderId: order.id },
+        client_reference_id: order.id,
+        amount_total: 6000,
+        status: 'complete',
+        payment_status: 'paid',
+        expires_at: Math.floor(Date.now() / 1000) + 1800,
+        url: null,
+        ...stripeAddress(),
+      } as unknown as Stripe.Checkout.Session);
+      await prisma.order.update({ where: { id: order.id }, data: { checkoutSessionId: id } });
+      const status = await request(app.getHttpServer()).get(`/payments/checkout/${id}`).expect(200);
+      expect(status.body).toMatchObject({ paymentStatus: 'PAID', total: 6000, shippingFee: 0 });
+      expect(status.body.shippingAddress).toBeUndefined();
+      const paid = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(paid.shippingAddress).toMatchObject({ city: 'Lyon', postalCode: '69002' });
+    });
+
+    it('keeps a paid order without usable address unshippable, then recovers it from a re-sent webhook', async () => {
+      const { order, normalized, checkoutKey } = await legacyReservation();
+      const resumed = await app.get(PaymentsService).checkout(
+        { ...normalized, checkoutKey, shippingAddress: null as unknown as ShippingAddressDto, expectedShippingFee: 0 },
+        '203.0.113.7',
+      );
+      const session = sessions.get(resumed.sessionId)!;
+      // Overseas postcode: not deliverable at mainland conditions, so not stored.
+      Object.assign(session, { status: 'complete', payment_status: 'paid', collected_information: stripeAddress('97100') });
+      expect((await event(session)).status).toBe(200);
+      const paid = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      expect(paid).toMatchObject({ paymentStatus: 'PAID', shippingAddress: null, total: 6000 });
+      await update(order.id, { status: 'PREPARING' }).expect(409);
+      // After the address is corrected on Stripe's side, re-sending the event fills it once.
+      Object.assign(session, { collected_information: stripeAddress('69002') });
+      expect((await event(session)).status).toBe(200);
+      await update(order.id, { status: 'PREPARING' }).expect(200);
     });
 
     it('allows only paid addressed orders through preparation, tracked shipment and delivery; retries are safe', async () => {

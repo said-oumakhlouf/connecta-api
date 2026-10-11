@@ -16,7 +16,7 @@ import { OrdersService } from '../orders/orders.service.js';
 import { StripeGateway } from './stripe.gateway.js';
 import { ShippingService } from '../shipping/shipping.service.js';
 import type { CheckoutDto } from './checkout.dto.js';
-import type { Order } from '../generated/prisma/client.js';
+import { Prisma, type Order } from '../generated/prisma/client.js';
 
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnModuleDestroy {
@@ -227,6 +227,10 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         throw new ConflictException(
           'Paiement reçu pour une réservation terminée : vérification nécessaire',
         );
+      // Reservations made before shipping support: the address was collected by Stripe.
+      // Copy it once (fee and total unchanged) so the paid order can be shipped.
+      const collected =
+        order.shippingAddress === null ? this.collectedAddress(session) : null;
       const changed = await this.prisma.order.updateMany({
         where: { id: order.id, paymentStatus: 'UNPAID' },
         data: {
@@ -234,6 +238,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           paymentStatus: 'PAID',
           status: 'CONFIRMED',
           paidAt: new Date(),
+          ...(collected ? { shippingAddress: collected } : {}),
         },
       });
       if (!changed.count) {
@@ -244,12 +249,49 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           throw new ConflictException(
             'Paiement reçu pour une réservation terminée : vérification nécessaire',
           );
+        // Recovery path: a re-delivered webhook fills a still-missing address, never overwrites.
+        if (collected && current.shippingAddress === null)
+          await this.prisma.order.updateMany({
+            where: {
+              id: order.id,
+              paymentStatus: 'PAID',
+              shippingAddress: { equals: Prisma.DbNull },
+            },
+            data: { shippingAddress: collected },
+          });
       }
+      if (order.shippingAddress === null && !collected)
+        this.logger.warn(
+          `Commande ${order.id} payée sans adresse de livraison exploitable : récupération manuelle (README)`,
+        );
     } else if (
       session.status === 'expired' &&
       session.payment_status !== 'paid'
     ) {
       await this.release(order.id, order.checkoutSessionId);
+    }
+  }
+
+  /** Address Stripe collected for a pre-shipping reservation, validated like ours, or null. */
+  private collectedAddress(session: Stripe.Checkout.Session) {
+    const details =
+      session.collected_information?.shipping_details ??
+      // Older Stripe API versions expose it at the session root.
+      (session as { shipping_details?: { address?: Stripe.Address } | null })
+        .shipping_details;
+    const address = details?.address;
+    if (address?.country !== 'FR') return null;
+    try {
+      return this.shipping.address({
+        country: 'FR',
+        line1: address.line1 ?? '',
+        line2: address.line2 ?? '',
+        city: address.city ?? '',
+        postalCode: address.postal_code ?? '',
+        region: '',
+      });
+    } catch {
+      return null;
     }
   }
 

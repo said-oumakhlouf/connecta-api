@@ -249,6 +249,23 @@ compte que les articles. Il ne représente pas des encaissements réels.
 5. `/admin` : préparation, expédition avec suivi, livraison.
 6. `/compte` : connexion par lien email, « Mes commandes » affiche le suivi.
 
+### Réservations antérieures à la livraison
+
+Une réservation `UNPAID` créée avant la migration n'a ni adresse ni frais en base :
+à la reprise, Stripe collecte l'adresse (France) et le total historique est
+conservé. Au paiement vérifié, l'API copie cette adresse sur la commande une seule
+fois, sans jamais écraser une adresse existante. Les sessions Stripe ouvertes avant
+la mise à jour sont traitées de la même façon (webhook ou vérification du retour).
+
+Si une commande payée reste sans adresse exploitable (log « payée sans adresse de
+livraison exploitable », expédition refusée en 409) :
+1. Vérifier l'adresse de la session dans le Dashboard Stripe (mode test).
+2. Si elle est correcte, renvoyer l'événement `checkout.session.completed` depuis
+   le Dashboard (ou `stripe events resend <evt_id>`) : l'adresse est alors copiée.
+3. Sinon (adresse hors France métropolitaine ou absente), ne pas expédier :
+   contacter le client, puis rembourser depuis Stripe si nécessaire. Aucune
+   modification manuelle de montant ou de statut en base.
+
 Les tests e2e simulent Stripe (`TEST_DATABASE_URL` sur une base dédiée) ; le
 parcours navigateur avec Stripe test réel reste à valider localement.
 
