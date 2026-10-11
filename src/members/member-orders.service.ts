@@ -14,6 +14,22 @@ export class MemberOrdersService {
     private readonly payments: PaymentsService,
   ) {}
 
+  /** Checkout details from the latest paid order belonging to the verified email. */
+  async customerDetails(email: string) {
+    const order = await this.prisma.order.findFirst({
+      where: {
+        customerEmail: { equals: email, mode: 'insensitive' },
+        paymentStatus: 'PAID',
+      },
+      orderBy: [{ paidAt: 'desc' }, { createdAt: 'desc' }],
+      select: { customerName: true, shippingAddress: true },
+    });
+    return {
+      customerName: order?.customerName ?? null,
+      shippingAddress: order?.shippingAddress ?? null,
+    };
+  }
+
   async list(email: string, page: number) {
     const where = {
       customerEmail: { equals: email, mode: 'insensitive' as const },

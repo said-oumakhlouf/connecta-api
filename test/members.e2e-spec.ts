@@ -274,6 +274,62 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
       .expect(429);
   });
 
+  it('prefills only the verified member and refuses another email at checkout', async () => {
+    const mine = await order();
+    await order(`other-${email}`);
+    mine.session.status = 'complete';
+    mine.session.payment_status = 'paid';
+    await app.get(PaymentsService).applySession(mine.session, mine);
+    const cookie = await login();
+
+    const own = await request(app.getHttpServer())
+      .get('/members/me')
+      .set('Cookie', cookie)
+      .expect(200);
+    expect(own.body).toMatchObject({
+      email,
+      customerName: 'Member customer',
+      shippingAddress: mine.shippingAddress,
+    });
+    expect(JSON.stringify(own.body)).not.toContain('other-');
+
+    const dto = {
+      customerName: 'Member customer',
+      customerEmail: email,
+      items: [{ productId, quantity: 1 }],
+      shippingAddress: { country: 'FR', line1: '12 rue du Test', line2: '', city: 'Paris', postalCode: '75001', region: '' },
+      expectedShippingFee: 0,
+      checkoutKey: randomUUID(),
+    };
+    await request(app.getHttpServer())
+      .post('/members/checkout')
+      .set('Origin', origin)
+      .send(dto)
+      .expect(401);
+    await request(app.getHttpServer())
+      .post('/members/checkout')
+      .set('Origin', 'https://evil.test')
+      .set('Cookie', cookie)
+      .send(dto)
+      .expect(403);
+    await request(app.getHttpServer())
+      .post('/members/checkout')
+      .set('Origin', origin)
+      .set('Cookie', cookie)
+      .send({ ...dto, customerEmail: `other-${email}` })
+      .expect(403);
+    const response = await request(app.getHttpServer())
+      .post('/members/checkout')
+      .set('Origin', origin)
+      .set('Cookie', cookie)
+      .send(dto)
+      .expect(200);
+    expect(response.body.total).toBe(3500);
+    const created = await prisma.order.findUniqueOrThrow({ where: { checkoutKey: dto.checkoutKey } });
+    expect(created.customerEmail).toBe(email);
+    expect(created.customerName).toBe('Member customer');
+  });
+
   it('shows the shipment tracking to its verified owner', async () => {
     const mine = await order();
     mine.session.status = 'complete'; mine.session.payment_status = 'paid';

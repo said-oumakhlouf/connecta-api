@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Header,
   HttpCode,
@@ -12,6 +13,8 @@ import {
   ValidationPipe,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { CheckoutDto } from '../payments/checkout.dto.js';
+import { PaymentsService } from '../payments/payments.service.js';
 import { MemberAuthService, MEMBER_COOKIE } from './member-auth.service.js';
 import { MemberOrdersService } from './member-orders.service.js';
 import {
@@ -40,6 +43,7 @@ export class MembersController {
   constructor(
     private readonly auth: MemberAuthService,
     private readonly orders: MemberOrdersService,
+    private readonly payments: PaymentsService,
   ) {}
 
   @Post('login')
@@ -69,8 +73,32 @@ export class MembersController {
 
   @Header('Cache-Control', 'no-store')
   @Get('me')
-  me(@Req() req: Request) {
-    return this.auth.authorize(req);
+  async me(@Req() req: Request) {
+    const member = await this.auth.authorize(req);
+    return { ...member, ...(await this.orders.customerDetails(member.email)) };
+  }
+
+  /** Authenticated checkout: email identity always comes from the verified session. */
+  @Post('checkout')
+  @Header('Cache-Control', 'no-store')
+  @HttpCode(200)
+  async checkout(
+    @Body(new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      expectedType: CheckoutDto,
+    })) dto: CheckoutDto,
+    @Req() req: Request,
+  ) {
+    this.auth.assertOrigin(req.headers.origin);
+    const member = await this.auth.authorize(req);
+    if (dto.customerEmail.trim().toLowerCase() !== member.email)
+      throw new ForbiddenException('Utilisez l’adresse email de votre compte connecté.');
+    return this.payments.checkout(
+      { ...dto, customerEmail: member.email },
+      req.ip ?? 'unknown',
+    );
   }
 
   @Header('Cache-Control', 'no-store')
