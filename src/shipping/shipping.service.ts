@@ -35,9 +35,16 @@ export class ShippingService {
 
   address(value: ShippingAddressDto) {
     if (!value) throw new BadRequestException('Adresse de livraison obligatoire.');
+    // Printed on the parcel label and shown in the admin: no control characters or markup.
+    const text = (input: string | undefined) => {
+      const cleaned = (input ?? '').normalize('NFC').replace(/[ \t]+/g, ' ').trim();
+      if (/[\p{Cc}\p{Cf}<>]/u.test(cleaned))
+        throw new BadRequestException('Adresse de livraison invalide.');
+      return cleaned;
+    };
     const address = {
-      line1: value.line1.trim(), line2: (value.line2 ?? '').trim(),
-      city: value.city.trim(), postalCode: value.postalCode.replace(/\s+/g, '').toUpperCase(),
+      line1: text(value.line1), line2: text(value.line2),
+      city: text(value.city), postalCode: value.postalCode.replace(/\s+/g, '').toUpperCase(),
       region: value.country === 'CA' ? (value.region ?? '').trim().toUpperCase() : '',
       country: value.country,
     };
@@ -48,6 +55,8 @@ export class ShippingService {
         : address.country === 'CA' && /^[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\d[ABCEGHJ-NPRSTV-Z]\d$/.test(address.postalCode)
           && ['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].includes(address.region);
     if (!validPostal) throw new BadRequestException('Code postal ou province invalide pour la destination.');
+    if (address.line1.length < 3 || address.city.length < 2)
+      throw new BadRequestException('Adresse de livraison incomplète.');
     if (address.country === 'CA') address.postalCode = address.postalCode.slice(0, 3) + ' ' + address.postalCode.slice(3);
     return address;
   }

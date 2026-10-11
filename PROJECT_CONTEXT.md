@@ -3,7 +3,7 @@
 ## Projet
 - Backend du site `said-oumakhlouf/connecta`.
 - Stack : NestJS 12, TypeScript, Prisma 7, PostgreSQL ; API locale généralement sur le port 3001.
-- Modules présents : `products`, `orders`, `admin`, `payments`, `members` dans `src/`.
+- Modules présents : `products`, `orders`, `admin`, `payments`, `members`, `shipping` dans `src/`.
 
 ## État constaté dans le dépôt
 - Produits : `GET /products`, `GET /products/:slug` ; administration des commandes, stock et statistiques.
@@ -11,6 +11,7 @@
 - Stripe Checkout **en test uniquement** : réservation `UNPAID`, validation de paiement `PAID` via Stripe, expiration `EXPIRED` ; ne jamais confirmer sur simple retour navigateur.
 - Ancien `POST /orders` sans paiement réservé au développement ; anciennes commandes `LEGACY`.
 - Membres : connexion par lien email, sessions et historique des commandes vérifiées (voir `README.md`).
+- Livraison (`src/shipping`) : `GET /payments/shipping`, adresse et frais validés serveur, total Stripe = articles + livraison, suivi admin `POST /admin/orders/:id/fulfillment` (commandes `PAID` uniquement), suivi visible dans « Mes commandes ». Tarifs provisoires tant que `SHIPPING_RATES_CONFIRMED` ≠ `true`.
 - Limite panier : 10 unités physiques ; réservation et restitution de stock à préserver.
 - Modèles et migrations : `prisma/schema.prisma` et `prisma/migrations/`.
 - Secrets (`DATABASE_URL`, Stripe, admin, envoi email) : seulement dans `.env` local, jamais dans Git ni dans le frontend.

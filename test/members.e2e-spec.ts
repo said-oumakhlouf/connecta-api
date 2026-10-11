@@ -13,6 +13,7 @@ import { StripeGateway } from '../src/payments/stripe.gateway.js';
 import { MemberEmailService } from '../src/members/member-email.service.js';
 import { MemberAuthService } from '../src/members/member-auth.service.js';
 import { configureCors } from '../src/configure-cors.js';
+import { OrdersService } from '../src/orders/orders.service.js';
 
 const origin = 'http://localhost:3000';
 const digest = (value: string) =>
@@ -336,6 +337,37 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
     await prisma.order.deleteMany({
       where: { customerEmail: { equals: email, mode: 'insensitive' } },
     });
+  });
+
+  it('resumes a reservation made before shipping support without adding a fee', async () => {
+    // Same fingerprint as a checkout created before the shipping migration.
+    const normalized = {
+      customerName: 'Legacy customer',
+      customerEmail: email,
+      items: [{ productId, quantity: 2 }],
+    };
+    const legacy = await app.get(OrdersService).create(normalized, {
+      checkoutKey: randomUUID(),
+      checkoutFingerprint: createHash('sha256')
+        .update(JSON.stringify(normalized))
+        .digest('hex'),
+      checkoutIpHash: createHash('sha256').update('203.0.113.9').digest('hex'),
+      reservedUntil: new Date(Date.now() + 30 * 60 * 1000),
+    });
+    expect(legacy).toMatchObject({ shippingAddress: null, shippingFee: 0, total: 6000 });
+    const stripe = app.get(StripeGateway).requireClient();
+    const create = vi.spyOn(stripe.checkout.sessions, 'create');
+    const cookie = await login();
+    const resumed = await request(app.getHttpServer())
+      .post(`/members/orders/${legacy.id}/resume`)
+      .set('Cookie', cookie)
+      .set('Origin', origin)
+      .expect(200);
+    expect(resumed.body).toMatchObject({ total: 6000, shippingFee: 0 });
+    const params = create.mock.calls.at(-1)![0] as Stripe.Checkout.SessionCreateParams;
+    expect(params.shipping_address_collection).toEqual({ allowed_countries: ['FR'] });
+    expect(params.line_items).toHaveLength(1);
+    expect(await stock()).toBe(18);
   });
 
   it('resumes and cancels only an owned unpaid order, with no duplicate stock reservation', async () => {

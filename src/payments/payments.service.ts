@@ -122,7 +122,11 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
               expires_at: Math.floor(order.reservedUntil.getTime() / 1000),
               success_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?session_id={CHECKOUT_SESSION_ID}`,
               cancel_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?retour=1`,
-
+              // Reservations made before shipping support have no stored address:
+              // Stripe still collects it for them, as it did when they were created.
+              ...(order.shippingAddress
+                ? {}
+                : { shipping_address_collection: { allowed_countries: ['FR'] } }),
               line_items: [...order.items.map((item) => ({
                 quantity: 1,
                 price_data: {

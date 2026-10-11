@@ -215,10 +215,42 @@ joindre Stripe. Elle vérifie aussi les réservations échues au démarrage. Un 
 vérifié gagne sur une demande d'annulation : une commande payée conserve son stock
 consommé et ne peut pas être annulée sans remboursement.
 
-Checkout collecte l'adresse de livraison française dans Stripe. Elle est consultable
-dans le Dashboard Stripe et n'est pas encore copiée dans la base CONNECTA. Le bilan
-mensuel conserve sa définition : commandes en attente et confirmées, anciennes et
-de test, hors annulées. Il ne représente pas des encaissements réels.
+L'adresse de livraison est saisie dans le panier CONNECTA, validée par l'API et
+enregistrée sur la commande avec les frais. Le total Stripe (articles + livraison)
+est calculé uniquement côté serveur. Les réservations antérieures à la livraison
+gardent leur montant et Stripe collecte encore leur adresse. Le bilan mensuel
+inclut la livraison dans le montant des commandes ; le classement produits ne
+compte que les articles. Il ne représente pas des encaissements réels.
+
+## Livraison et suivi
+
+- `GET /payments/shipping` : destinations et frais en centimes (`provisional: true`
+  tant que `SHIPPING_RATES_CONFIRMED` n'est pas `true`, voir `.env.example`).
+- `POST /payments/checkout` exige `shippingAddress` et `expectedShippingFee`.
+  Adresse invalide ou pays non proposé : 400. Frais affichés différents du tarif
+  serveur : 409 `SHIPPING_RATE_CHANGED`, sans réservation. Une même clé de
+  tentative reste liée à son adresse et conserve le tarif de sa réservation.
+- `POST /admin/orders/:id/fulfillment` (administrateur) : `PREPARING`, puis
+  `SHIPPED` avec `trackingCarrier` et `trackingNumber`, puis `DELIVERED`.
+  Refusé (409) si la commande n'est pas `PAID` et `CONFIRMED` ou sans adresse ;
+  répéter la même étape est sans effet.
+- `GET /members/orders` renvoie adresse, frais et suivi, uniquement pour les
+  commandes de l'email vérifié.
+
+### Parcours local en mode test
+
+1. `npx prisma migrate deploy` puis `npx prisma generate` (migration
+   `20261010103000_shipping`, uniquement des ajouts de colonnes).
+2. API : `npm run start:dev` avec des clés Stripe `sk_test_`/`whsec_` et
+   `stripe listen --forward-to localhost:3001/payments/webhook`.
+3. Front (`connecta@ecommerce-checkout`) : `npm run dev`, panier → adresse →
+   total avec livraison → Stripe Checkout test (carte `4242 4242 4242 4242`).
+4. Le retour `/paiement` affiche `PAID` seulement après vérification serveur.
+5. `/admin` : préparation, expédition avec suivi, livraison.
+6. `/compte` : connexion par lien email, « Mes commandes » affiche le suivi.
+
+Les tests e2e simulent Stripe (`TEST_DATABASE_URL` sur une base dédiée) ; le
+parcours navigateur avec Stripe test réel reste à valider localement.
 
 ## Limites des réservations
 
@@ -252,9 +284,9 @@ réservations. Les anciennes commandes `LEGACY` gardent leur traitement manuel.
 La page frontend `/compte` permet de demander un lien email, de confirmer la
 connexion et de consulter uniquement les commandes de son email vérifié.
 Les anciennes commandes de cet email sont accessibles sans migration des montants
-ni des statuts. L’achat reste possible sans compte à cette étape ; les limites
-par email et IP restent celles du checkout. La livraison et les adresses membres
-seront ajoutées séparément.
+ni des statuts. L’achat reste possible sans compte ; les limites
+par email et IP restent celles du checkout. Chaque commande affiche son adresse,
+ses frais et son suivi de livraison.
 
 Appliquer `npx prisma migrate deploy`, puis `npx prisma generate` avant de
 redémarrer. La migration crée `Member`, `MemberSession`, `MemberLoginToken`,

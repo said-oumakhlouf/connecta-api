@@ -34,4 +34,11 @@ describe('Shipping rates and address boundaries', () => {
     for (const changes of [{ shippingAddress: null }, { expectedShippingFee: undefined }, { shippingAddress: { ...address, line1: '  ' } }, { shippingAddress: { ...address, fee: 0 } }])
       expect((await check({ ...dto, ...changes })).length).toBeGreaterThan(0);
   });
+  it('rejects control characters and markup that would reach labels and the admin', () => {
+    for (const value of [
+      { ...address, line1: '12 rue\u0000du Test' }, { ...address, line1: '12 rue\ndu Test' },
+      { ...address, city: '<script>Paris' }, { ...address, line2: 'Bât\u200bB' }, { ...address, line1: '  \t ' },
+    ]) expect(() => service().address(value)).toThrow();
+    expect(service().address({ ...address, line1: '  12   rue du Test ', line2: 'Bât. B, 2ᵉ étage' })).toMatchObject({ line1: '12 rue du Test', line2: 'Bât. B, 2ᵉ étage' });
+  });
 });
