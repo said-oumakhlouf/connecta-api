@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -13,8 +14,9 @@ import Stripe from 'stripe';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { OrdersService } from '../orders/orders.service.js';
 import { StripeGateway } from './stripe.gateway.js';
+import { ShippingService } from '../shipping/shipping.service.js';
 import type { CheckoutDto } from './checkout.dto.js';
-import type { Order } from '../generated/prisma/client.js';
+import { Prisma, type Order } from '../generated/prisma/client.js';
 
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnModuleDestroy {
@@ -31,6 +33,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly orders: OrdersService,
     private readonly stripe: StripeGateway,
+    private readonly shipping: ShippingService,
   ) {}
 
   async onModuleInit() {
@@ -52,6 +55,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         (quantities.get(item.productId) ?? 0) + item.quantity,
       );
     const normalized = {
+      ...(dto.shippingAddress ? { shippingAddress: this.shipping.address(dto.shippingAddress) } : {}),
       customerName: dto.customerName.trim(),
       customerEmail: dto.customerEmail.trim().toLowerCase(),
       items: [...quantities]
@@ -66,9 +70,15 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       include: { items: true },
     });
     if (!order) {
+      if (!normalized.shippingAddress) throw new BadRequestException('Adresse de livraison obligatoire.');
+      const shippingFee = this.shipping.fee(normalized.shippingAddress.country);
+      if (dto.expectedShippingFee !== shippingFee)
+        throw new ConflictException({ code: 'SHIPPING_RATE_CHANGED', message: 'Le tarif de livraison a changé. Actualisez le panier.' });
       this.limit(ip);
       try {
         order = await this.orders.create(normalized, {
+          shippingAddress: normalized.shippingAddress,
+          shippingFee,
           checkoutKey: dto.checkoutKey,
           checkoutFingerprint,
           checkoutIpHash: createHash('sha256').update(ip).digest('hex'),
@@ -112,8 +122,12 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
               expires_at: Math.floor(order.reservedUntil.getTime() / 1000),
               success_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?session_id={CHECKOUT_SESSION_ID}`,
               cancel_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?retour=1`,
-              shipping_address_collection: { allowed_countries: ['FR'] },
-              line_items: order.items.map((item) => ({
+              // Reservations made before shipping support have no stored address:
+              // Stripe still collects it for them, as it did when they were created.
+              ...(order.shippingAddress
+                ? {}
+                : { shipping_address_collection: { allowed_countries: ['FR'] } }),
+              line_items: [...order.items.map((item) => ({
                 quantity: 1,
                 price_data: {
                   currency: 'eur',
@@ -122,7 +136,11 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
                     name: `${item.productName} · ${item.quantity} unité(s)`,
                   },
                 },
-              })),
+              })), ...(order.shippingFee > 0 ? [{
+                quantity: 1,
+                price_data: { currency: 'eur', unit_amount: order.shippingFee,
+                  product_data: { name: 'Livraison' } },
+              }] : [])],
             },
             { idempotencyKey: `connecta-checkout-${order.checkoutKey}` },
           );
@@ -160,6 +178,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       sessionId: session.id,
       url: session.url,
       expiresAt: new Date(session.expires_at * 1000).toISOString(),
+      shippingFee: order.shippingFee,
       total: order.total,
       testMode: true,
     };
@@ -208,6 +227,10 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
         throw new ConflictException(
           'Paiement reçu pour une réservation terminée : vérification nécessaire',
         );
+      // Reservations made before shipping support: the address was collected by Stripe.
+      // Copy it once (fee and total unchanged) so the paid order can be shipped.
+      const collected =
+        order.shippingAddress === null ? this.collectedAddress(session) : null;
       const changed = await this.prisma.order.updateMany({
         where: { id: order.id, paymentStatus: 'UNPAID' },
         data: {
@@ -215,6 +238,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           paymentStatus: 'PAID',
           status: 'CONFIRMED',
           paidAt: new Date(),
+          ...(collected ? { shippingAddress: collected } : {}),
         },
       });
       if (!changed.count) {
@@ -225,12 +249,49 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
           throw new ConflictException(
             'Paiement reçu pour une réservation terminée : vérification nécessaire',
           );
+        // Recovery path: a re-delivered webhook fills a still-missing address, never overwrites.
+        if (collected && current.shippingAddress === null)
+          await this.prisma.order.updateMany({
+            where: {
+              id: order.id,
+              paymentStatus: 'PAID',
+              shippingAddress: { equals: Prisma.DbNull },
+            },
+            data: { shippingAddress: collected },
+          });
       }
+      if (order.shippingAddress === null && !collected)
+        this.logger.warn(
+          `Commande ${order.id} payée sans adresse de livraison exploitable : récupération manuelle (README)`,
+        );
     } else if (
       session.status === 'expired' &&
       session.payment_status !== 'paid'
     ) {
       await this.release(order.id, order.checkoutSessionId);
+    }
+  }
+
+  /** Address Stripe collected for a pre-shipping reservation, validated like ours, or null. */
+  private collectedAddress(session: Stripe.Checkout.Session) {
+    const details =
+      session.collected_information?.shipping_details ??
+      // Older Stripe API versions expose it at the session root.
+      (session as { shipping_details?: { address?: Stripe.Address } | null })
+        .shipping_details;
+    const address = details?.address;
+    if (address?.country !== 'FR') return null;
+    try {
+      return this.shipping.address({
+        country: 'FR',
+        line1: address.line1 ?? '',
+        line2: address.line2 ?? '',
+        city: address.city ?? '',
+        postalCode: address.postal_code ?? '',
+        region: '',
+      });
+    } catch {
+      return null;
     }
   }
 
@@ -278,6 +339,7 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     });
     return {
       orderId: order.id,
+      shippingFee: order.shippingFee,
       total: order.total,
       paymentStatus: order.paymentStatus,
       expiresAt: order.reservedUntil?.toISOString(),

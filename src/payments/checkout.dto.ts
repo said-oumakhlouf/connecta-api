@@ -1,7 +1,19 @@
-import { IsUUID } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsDefined, IsInt, IsUUID, Max, Min, ValidateNested } from 'class-validator';
 import { CreateOrderDto } from '../orders/dto/create-order.dto.js';
+import { ShippingAddressDto } from '../shipping/shipping.dto.js';
 
 export class CheckoutDto extends CreateOrderDto {
   @IsUUID('4')
   checkoutKey: string;
+
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => ShippingAddressDto)
+  shippingAddress: ShippingAddressDto;
+
+  @IsInt()
+  @Min(0)
+  @Max(100000)
+  expectedShippingFee: number;
 }

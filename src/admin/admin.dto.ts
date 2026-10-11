@@ -1,5 +1,6 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  ValidateIf,
   IsInt,
   IsIn,
   IsUUID,
@@ -53,4 +54,22 @@ export class AdminAnalyticsQueryDto {
   @IsString()
   @Matches(/^20\d{2}-(0[1-9]|1[0-2])$/)
   month: string;
+}
+
+export class UpdateFulfillmentDto {
+  @IsIn(['PREPARING', 'SHIPPED', 'DELIVERED'])
+  status: 'PREPARING' | 'SHIPPED' | 'DELIVERED';
+
+  @ValidateIf((dto: UpdateFulfillmentDto) => dto.status === 'SHIPPED' || dto.trackingCarrier !== undefined)
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
+  @IsString()
+  @MinLength(2)
+  @MaxLength(60)
+  trackingCarrier?: string;
+
+  @ValidateIf((dto: UpdateFulfillmentDto) => dto.status === 'SHIPPED' || dto.trackingNumber !== undefined)
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
+  @IsString()
+  @Matches(/^[a-zA-Z0-9][a-zA-Z0-9 -]{2,79}$/)
+  trackingNumber?: string;
 }

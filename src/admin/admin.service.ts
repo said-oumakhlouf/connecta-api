@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import type { AdminOrdersQueryDto } from './admin.dto.js';
+import type { AdminOrdersQueryDto, UpdateFulfillmentDto } from './admin.dto.js';
 import { PaymentsService } from '../payments/payments.service.js';
 
 const productSelect = {
@@ -19,6 +19,13 @@ const productSelect = {
 } as const;
 
 const orderSelect = {
+  shippingAddress: true,
+  shippingFee: true,
+  fulfillmentStatus: true,
+  trackingCarrier: true,
+  trackingNumber: true,
+  shippedAt: true,
+  deliveredAt: true,
   id: true,
   customerName: true,
   customerEmail: true,
@@ -219,6 +226,34 @@ export class AdminService {
           }
         }
       }
+      return order;
+    });
+  }
+
+  async updateFulfillment(id: string, dto: UpdateFulfillmentDto) {
+    if (dto.status !== 'SHIPPED' && (dto.trackingNumber !== undefined || dto.trackingCarrier !== undefined))
+      throw new BadRequestException('Le suivi se renseigne lors de l’expédition.');
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.order.findUnique({ where: { id }, select: orderSelect });
+      if (!current) throw new NotFoundException('Commande introuvable');
+      if (current.paymentStatus !== 'PAID' || current.status !== 'CONFIRMED' || !current.shippingAddress)
+        throw new ConflictException('Un paiement confirmé et une adresse de livraison sont nécessaires.');
+      const same = (order: typeof current) => order.fulfillmentStatus === dto.status &&
+        (dto.status !== 'SHIPPED' || (order.trackingCarrier === dto.trackingCarrier && order.trackingNumber === dto.trackingNumber));
+      if (same(current)) return current;
+      const previous = { PREPARING: 'UNFULFILLED', SHIPPED: 'PREPARING', DELIVERED: 'SHIPPED' } as const;
+      if (current.fulfillmentStatus !== previous[dto.status])
+        throw new ConflictException('Actualisez la commande et respectez les étapes de livraison.');
+      const changed = await tx.order.updateMany({
+        where: { id, paymentStatus: 'PAID', status: 'CONFIRMED', fulfillmentStatus: previous[dto.status] },
+        data: {
+          fulfillmentStatus: dto.status,
+          ...(dto.status === 'SHIPPED' ? { trackingCarrier: dto.trackingCarrier, trackingNumber: dto.trackingNumber, shippedAt: new Date() } : {}),
+          ...(dto.status === 'DELIVERED' ? { deliveredAt: new Date() } : {}),
+        },
+      });
+      const order = await tx.order.findUniqueOrThrow({ where: { id }, select: orderSelect });
+      if (!changed.count && !same(order)) throw new ConflictException('La livraison a changé. Actualisez.');
       return order;
     });
   }

@@ -13,6 +13,7 @@ import { StripeGateway } from '../src/payments/stripe.gateway.js';
 import { MemberEmailService } from '../src/members/member-email.service.js';
 import { MemberAuthService } from '../src/members/member-auth.service.js';
 import { configureCors } from '../src/configure-cors.js';
+import { OrdersService } from '../src/orders/orders.service.js';
 
 const origin = 'http://localhost:3000';
 const digest = (value: string) =>
@@ -68,6 +69,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
     };
     config = new ConfigService({
       NODE_ENV: 'test',
+      SHIPPING_FR_CENTS: '0',
       CORS_ORIGINS: origin,
       CHECKOUT_SITE_URL: origin,
     });
@@ -138,6 +140,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
         customerName: 'Member customer',
         customerEmail: address,
         items: [{ productId, quantity: 2 }],
+        shippingAddress: { country: 'FR', line1: '12 rue du Test', line2: '', city: 'Paris', postalCode: '75001', region: '' },
+        expectedShippingFee: 0,
         checkoutKey: randomUUID(),
       },
       '203.0.113.1',
@@ -270,6 +274,19 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
       .expect(429);
   });
 
+  it('shows the shipment tracking to its verified owner', async () => {
+    const mine = await order();
+    mine.session.status = 'complete'; mine.session.payment_status = 'paid';
+    await app.get(PaymentsService).applySession(mine.session, mine);
+    const { AdminService } = await import('../src/admin/admin.service.js');
+    await app.get(AdminService).updateFulfillment(mine.id, { status: 'PREPARING' });
+    await app.get(AdminService).updateFulfillment(mine.id, { status: 'SHIPPED', trackingCarrier: 'Colissimo', trackingNumber: 'TEST123456' });
+    const cookie = await login();
+    const response = await request(app.getHttpServer()).get('/members/orders').set('Cookie', cookie).expect(200);
+    expect(response.body.orders[0]).toMatchObject({ fulfillmentStatus: 'SHIPPED', trackingCarrier: 'Colissimo', trackingNumber: 'TEST123456', shippingAddress: mine.shippingAddress });
+    expect(response.body.orders[0].shippedAt).toBeTruthy();
+  });
+
   it('lists only the verified email orders including old orders, excludes internal credentials and paginates', async () => {
     const foreign = `foreign-${email}`;
     const mine = await order();
@@ -308,6 +325,8 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
     const rows = [...first.body.orders, ...second.body.orders];
     expect(rows.some((row: { id: string }) => row.id === mine.id)).toBe(true);
     expect(rows.some((row: { id: string }) => row.id === other.id)).toBe(false);
+    expect(rows.find((row: { id: string }) => row.id === mine.id).shippingAddress).toEqual(mine.shippingAddress);
+    expect(rows.find((row: { id: string }) => row.id === mine.id).shippingFee).toBe(0);
     expect(JSON.stringify(rows)).not.toContain('checkoutKey');
     expect(JSON.stringify(rows)).not.toContain('checkoutIpHash');
     await request(app.getHttpServer())
@@ -318,6 +337,37 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
     await prisma.order.deleteMany({
       where: { customerEmail: { equals: email, mode: 'insensitive' } },
     });
+  });
+
+  it('resumes a reservation made before shipping support without adding a fee', async () => {
+    // Same fingerprint as a checkout created before the shipping migration.
+    const normalized = {
+      customerName: 'Legacy customer',
+      customerEmail: email,
+      items: [{ productId, quantity: 2 }],
+    };
+    const legacy = await app.get(OrdersService).create(normalized, {
+      checkoutKey: randomUUID(),
+      checkoutFingerprint: createHash('sha256')
+        .update(JSON.stringify(normalized))
+        .digest('hex'),
+      checkoutIpHash: createHash('sha256').update('203.0.113.9').digest('hex'),
+      reservedUntil: new Date(Date.now() + 30 * 60 * 1000),
+    });
+    expect(legacy).toMatchObject({ shippingAddress: null, shippingFee: 0, total: 6000 });
+    const stripe = app.get(StripeGateway).requireClient();
+    const create = vi.spyOn(stripe.checkout.sessions, 'create');
+    const cookie = await login();
+    const resumed = await request(app.getHttpServer())
+      .post(`/members/orders/${legacy.id}/resume`)
+      .set('Cookie', cookie)
+      .set('Origin', origin)
+      .expect(200);
+    expect(resumed.body).toMatchObject({ total: 6000, shippingFee: 0 });
+    const params = create.mock.calls.at(-1)![0] as Stripe.Checkout.SessionCreateParams;
+    expect(params.shipping_address_collection).toEqual({ allowed_countries: ['FR'] });
+    expect(params.line_items).toHaveLength(1);
+    expect(await stock()).toBe(18);
   });
 
   it('resumes and cancels only an owned unpaid order, with no duplicate stock reservation', async () => {
