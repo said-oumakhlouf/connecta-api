@@ -7,5 +7,7 @@ export default defineConfig({
     globals: true,
     root: './',
     include: ['**/*.e2e-spec.ts'],
+    // Every integration suite shares one PostgreSQL database in CI.
+    fileParallelism: false,
   },
 });
