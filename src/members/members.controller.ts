@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Header,
   HttpCode,
@@ -92,6 +93,8 @@ export class MembersController {
   ) {
     this.auth.assertOrigin(req.headers.origin);
     const member = await this.auth.authorize(req);
+    if (dto.customerEmail.trim().toLowerCase() !== member.email)
+      throw new ForbiddenException('Utilisez l’adresse email de votre compte connecté.');
     return this.payments.checkout(
       { ...dto, customerEmail: member.email },
       req.ip ?? 'unknown',
