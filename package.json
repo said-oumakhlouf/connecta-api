@@ -21,6 +21,7 @@
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "prisma:generate": "prisma generate",
+    "seed:multi-products:test": "node scripts/seed-multi-products-test.mjs",
     "prisma:migrate": "prisma migrate dev",
     "prebuild": "prisma generate"
   },
