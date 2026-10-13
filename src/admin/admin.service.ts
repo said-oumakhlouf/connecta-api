@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { AdminOrdersQueryDto, UpdateFulfillmentDto } from './admin.dto.js';
 import { PaymentsService } from '../payments/payments.service.js';
+import type { Prisma } from '../generated/prisma/client.js';
 
 const productSelect = {
   id: true,
@@ -55,15 +56,48 @@ export class AdminService {
     private readonly payments: PaymentsService,
   ) {}
 
-  async orders({ page, limit }: AdminOrdersQueryDto) {
+  async orders({ page, limit, search, letter, sort = 'date_desc', filter = 'all' }: AdminOrdersQueryDto) {
+    const term = search?.trim();
+    // Filtering happens in PostgreSQL, before pagination, not on one screen of 20.
+    const conditions: Prisma.OrderWhereInput[] = [];
+    if (term) {
+      const text = { contains: term, mode: 'insensitive' as const };
+      const reference = term.replaceAll('-', '').slice(0, 8);
+      conditions.push({
+        OR: [
+          { customerName: text },
+          { customerEmail: text },
+          { items: { some: { productName: text } } },
+          ...(reference.length >= 6 && /^[a-f0-9]+$/i.test(reference)
+            ? [{ id: { startsWith: reference.toLowerCase() } }]
+            : []),
+        ],
+      });
+    }
+    if (letter) conditions.push({
+      customerName: { startsWith: letter, mode: 'insensitive' },
+    });
+    if (filter === 'paid') conditions.push({ paymentStatus: 'PAID' });
+    if (filter === 'unpaid') conditions.push({ paymentStatus: 'UNPAID' });
+    if (filter === 'preparing') conditions.push({ paymentStatus: 'PAID', fulfillmentStatus: 'PREPARING' });
+    if (filter === 'shipped') conditions.push({ paymentStatus: 'PAID', fulfillmentStatus: 'SHIPPED' });
+    if (filter === 'delivered') conditions.push({ paymentStatus: 'PAID', fulfillmentStatus: 'DELIVERED' });
+    const where: Prisma.OrderWhereInput = conditions.length ? { AND: conditions } : {};
+    const orderBy: Prisma.OrderOrderByWithRelationInput[] =
+      sort === 'name_asc'
+        ? [{ customerName: 'asc' }, { createdAt: 'desc' }, { id: 'desc' }]
+        : sort === 'name_desc'
+          ? [{ customerName: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }]
+          : [{ createdAt: 'desc' }, { id: 'desc' }];
     const [orders, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({
+        where,
         skip: (page - 1) * limit,
         take: limit,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        orderBy,
         select: orderSelect,
       }),
-      this.prisma.order.count(),
+      this.prisma.order.count({ where }),
     ]);
     return { orders, total, page, limit };
   }
