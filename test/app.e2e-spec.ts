@@ -323,29 +323,64 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       expect(await prisma.order.count({ where: { customerEmail } })).toBe(0);
     });
 
-    it('rejects aggregate quantities above 10', async () => {
-      await request(app.getHttpServer())
+    it('allows twelve units of one product, merging duplicate lines and consuming its stock', async () => {
+      await prisma.product.update({
+        where: { id: productIds[0] },
+        data: { stock: 12 },
+      });
+      const response = await request(app.getHttpServer())
         .post('/orders')
-        .send(
-          body([
-            { productId: productIds[0], quantity: 6 },
-            { productId: productIds[0], quantity: 6 },
-          ]),
-        )
-        .expect(400);
+        .send(body([
+          { productId: productIds[0], quantity: 6 },
+          { productId: productIds[0], quantity: 6 },
+        ]))
+        .expect(201);
+      expect(response.body.items).toHaveLength(1);
+      expect(response.body.items[0]).toMatchObject({ quantity: 12, lineTotal: 36000 });
+      expect((await prisma.product.findUniqueOrThrow({
+        where: { id: productIds[0] },
+      })).stock).toBe(0);
     });
 
-    it('limits the entire mixed-product basket to ten units', async () => {
+    it('permits a mixed basket above ten units when each reference is in stock', async () => {
+      await prisma.product.update({
+        where: { id: productIds[0] },
+        data: { stock: 6 },
+      });
+      await prisma.product.update({
+        where: { id: productIds[1] },
+        data: { stock: 5 },
+      });
+      const response = await request(app.getHttpServer())
+        .post('/orders')
+        .send(body([
+          { productId: productIds[0], quantity: 6 },
+          { productId: productIds[1], quantity: 5 },
+        ]))
+        .expect(201);
+      expect(response.body.items).toHaveLength(2);
+      expect(response.body.total).toBe(23000);
+      expect((await prisma.product.findUniqueOrThrow({
+        where: { id: productIds[0] },
+      })).stock).toBe(0);
+      expect((await prisma.product.findUniqueOrThrow({
+        where: { id: productIds[1] },
+      })).stock).toBe(0);
+    });
+
+    it('still rejects orders above real stock without creating a partial order', async () => {
+      await prisma.product.update({
+        where: { id: productIds[0] },
+        data: { stock: 12 },
+      });
       await request(app.getHttpServer())
         .post('/orders')
-        .send(
-          body([
-            { productId: productIds[0], quantity: 6 },
-            { productId: productIds[1], quantity: 5 },
-          ]),
-        )
-        .expect(400);
+        .send(body([{ productId: productIds[0], quantity: 13 }]))
+        .expect(409);
       expect(await prisma.order.count({ where: { customerEmail } })).toBe(0);
+      expect((await prisma.product.findUniqueOrThrow({
+        where: { id: productIds[0] },
+      })).stock).toBe(12);
     });
 
     it('rejects a total that would overflow a database integer', async () => {
