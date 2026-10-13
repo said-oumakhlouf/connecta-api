@@ -30,15 +30,13 @@ export class OrdersService {
     const quantities = new Map<number, number>();
     for (const item of dto.items) {
       const quantity = (quantities.get(item.productId) ?? 0) + item.quantity;
-      if (quantity > 10) {
-        throw new BadRequestException('Maximum 10 unités par commande');
+      if (!Number.isSafeInteger(quantity) || quantity > 2_147_483_647) {
+        throw new BadRequestException('Quantité invalide pour ce produit');
       }
       quantities.set(item.productId, quantity);
     }
-    if (
-      [...quantities.values()].reduce((sum, quantity) => sum + quantity, 0) > 10
-    )
-      throw new BadRequestException('Maximum 10 unités par commande');
+    // Purchases may consume the entire real stock. The transaction below
+    // atomically checks each reference; no arbitrary 10-unit business cap.
     const customerEmail = dto.customerEmail.trim().toLowerCase();
     const productIds = [...quantities.keys()].sort((a, b) => a - b);
 
@@ -104,9 +102,13 @@ export class OrdersService {
             items.some(
               (item) =>
                 item.unitPrice < 0 ||
+                !Number.isSafeInteger(item.lineTotal) ||
                 item.lineTotal < 0 ||
+                !Number.isSafeInteger(item.discount) ||
+                item.discount < 0 ||
                 item.discount > 2_147_483_647,
             ) ||
+            !Number.isSafeInteger(total) ||
             total > 2_147_483_647
           ) {
             throw new BadRequestException('Montant de commande invalide');
