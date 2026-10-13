@@ -460,22 +460,35 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       }
     });
 
-    it('enforces ten units across duplicate lines and accepts the ten-unit boundary', async () => {
-      for (const items of [
-        [{ productId, quantity: 11 }],
-        [
-          { productId, quantity: 6 },
-          { productId, quantity: 5 },
+    it('allows a buyer to pay for all twenty available items, including duplicate lines', async () => {
+      const response = await checkout({
+        ...body(),
+        items: [
+          { productId, quantity: 11 },
+          { productId, quantity: 9 },
         ],
-      ]) {
-        await checkout({ ...body(), items }).expect(400);
-        expect(await stock()).toBe(20);
-      }
+      }).expect(200);
+      expect(response.body).toMatchObject({ total: 60000, testMode: true });
+      expect(await stock()).toBe(0);
+      const session = sessions.get(response.body.sessionId)!;
+      expect(session.amount_total).toBe(60000);
+      const items = await prisma.orderItem.findMany({
+        where: { order: { checkoutSessionId: session.id } },
+      });
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ quantity: 20, lineTotal: 60000 });
+      session.status = 'complete';
+      session.payment_status = 'paid';
+      await event(session).then(result => expect(result.status).toBe(200));
+      expect(await stock()).toBe(0);
+    });
+
+    it('still refuses to reserve more units than are actually in stock', async () => {
       await checkout({
         ...body(),
-        items: [{ productId, quantity: 10 }],
-      }).expect(200);
-      expect(await stock()).toBe(10);
+        items: [{ productId, quantity: 21 }],
+      }).expect(409);
+      expect(await stock()).toBe(20);
     });
 
     it('blocks another unpaid reservation for a normalized email, then permits a new one after cancellation', async () => {
