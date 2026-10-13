@@ -435,7 +435,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
           .get(`/payments/checkout/${session.id}`).expect(200);
         expect(status.body).toMatchObject({ total: 8980, paymentStatus: 'PAID' });
       } finally {
-        // afterEach cleans the order through the original Hoco product.
+        await prisma.order.deleteMany({ where: { items: { some: { productId: { in: fixtures.map(item => item.id) } } } } });
         await prisma.product.deleteMany({ where: { id: { in: fixtures.map(item => item.id) } } });
       }
     });
@@ -455,6 +455,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         expect(await stock()).toBe(20);
         expect((await prisma.product.findUniqueOrThrow({ where: { id: fixture.id } })).stock).toBe(5);
       } finally {
+        await prisma.order.deleteMany({ where: { items: { some: { productId: fixture.id } } } });
         await prisma.product.delete({ where: { id: fixture.id } });
       }
     });
