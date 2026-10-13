@@ -394,6 +394,71 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       expect(await stock()).toBe(18);
     });
 
+    it('checks out three distinct products, tracks separate stocks and validates the test Stripe total', async () => {
+      const fixtures = await prisma.product.createManyAndReturn({
+        data: [
+          { name: 'CONNECTA Câble USB-C TEST', slug: `cable-test-${randomUUID()}`, price: 990, stock: 12 },
+          { name: 'CONNECTA Chargeur 20W TEST', slug: `chargeur-test-${randomUUID()}`, price: 1990, stock: 7 },
+        ],
+      });
+      try {
+        const lines = [
+          { productId, quantity: 2 },
+          { productId: fixtures[0].id, quantity: 1 },
+          { productId: fixtures[1].id, quantity: 1 },
+        ];
+        const response = await checkout({ ...body(), items: lines }).expect(200);
+        expect(response.body).toMatchObject({ total: 8980, shippingFee: 0, testMode: true });
+        const session = sessions.get(response.body.sessionId)!;
+        const stripeLines = sdk.checkout.sessions.create.mock.calls[0][0].line_items!;
+        expect(stripeLines).toHaveLength(3);
+        expect(stripeLines.map((item: Stripe.Checkout.SessionCreateParams.LineItem) => item.price_data!.unit_amount))
+          .toEqual([6000, 990, 1990]);
+        expect(session.amount_total).toBe(8980);
+        const items = await prisma.orderItem.findMany({
+          where: { order: { checkoutSessionId: session.id } },
+          orderBy: { productId: 'asc' },
+        });
+        expect(items).toHaveLength(3);
+        expect(items.reduce((total, item) => total + item.lineTotal, 0)).toBe(8980);
+        const stocks = async () => Promise.all(
+          [productId, fixtures[0].id, fixtures[1].id].map(async id =>
+            (await prisma.product.findUniqueOrThrow({ where: { id } })).stock),
+        );
+        expect(await stocks()).toEqual([18, 11, 6]);
+        session.status = 'complete';
+        session.payment_status = 'paid';
+        await event(session).then(result => expect(result.status).toBe(200));
+        await event(session).then(result => expect(result.status).toBe(200));
+        expect(await stocks()).toEqual([18, 11, 6]);
+        const status = await request(app.getHttpServer())
+          .get(`/payments/checkout/${session.id}`).expect(200);
+        expect(status.body).toMatchObject({ total: 8980, paymentStatus: 'PAID' });
+      } finally {
+        // afterEach cleans the order through the original Hoco product.
+        await prisma.product.deleteMany({ where: { id: { in: fixtures.map(item => item.id) } } });
+      }
+    });
+
+    it('restores each reference of an expired mixed Stripe reservation', async () => {
+      const fixture = await prisma.product.create({
+        data: { name: 'CONNECTA Câble USB-C TEST', slug: `cancel-test-${randomUUID()}`, price: 990, stock: 5 },
+      });
+      try {
+        const response = await checkout({
+          ...body(), items: [{ productId, quantity: 1 }, { productId: fixture.id, quantity: 2 }],
+        }).expect(200);
+        expect(await stock()).toBe(19);
+        expect((await prisma.product.findUniqueOrThrow({ where: { id: fixture.id } })).stock).toBe(3);
+        await request(app.getHttpServer())
+          .post(`/payments/checkout/${response.body.sessionId}/cancel`).expect(200);
+        expect(await stock()).toBe(20);
+        expect((await prisma.product.findUniqueOrThrow({ where: { id: fixture.id } })).stock).toBe(5);
+      } finally {
+        await prisma.product.delete({ where: { id: fixture.id } });
+      }
+    });
+
     it('enforces ten units across duplicate lines and accepts the ten-unit boundary', async () => {
       for (const items of [
         [{ productId, quantity: 11 }],
