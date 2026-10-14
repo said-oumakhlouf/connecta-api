@@ -84,7 +84,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Member accounts (e2e)', () => {
       .overrideProvider(MemberEmailService)
       .useValue(mail)
       .overrideProvider(StripeGateway)
-      .useValue({ client: sdk, origin, requireClient: () => sdk })
+      .useValue({
+        client: sdk,
+        origin,
+        returnOrigin: StripeGateway.prototype.returnOrigin.bind({
+          origin,
+          returnOrigins: new Set([origin]),
+        }),
+        requireClient: () => sdk,
+      })
       .compile();
     app = module.createNestApplication({ rawBody: true });
     configureCors(app, origin);

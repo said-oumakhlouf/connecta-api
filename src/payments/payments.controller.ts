@@ -14,9 +14,16 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { ShippingService } from '../shipping/shipping.service.js';
-import { CheckoutDto } from './checkout.dto.js';
+import { CheckoutDto, ReservationKeyDto } from './checkout.dto.js';
 import { PaymentsService } from './payments.service.js';
 import { StripeGateway } from './stripe.gateway.js';
+
+const reservationKey = new ValidationPipe({
+  transform: true,
+  whitelist: true,
+  forbidNonWhitelisted: true,
+  expectedType: ReservationKeyDto,
+});
 
 @Controller('payments')
 export class PaymentsController {
@@ -45,7 +52,43 @@ export class PaymentsController {
     dto: CheckoutDto,
     @Req() req: Request,
   ) {
-    return this.payments.checkout(dto, req.ip ?? 'unknown');
+    return this.payments.checkout(dto, req.ip ?? 'unknown', req.headers.origin);
+  }
+
+  // Reservation routes: the random checkoutKey held by the shopper's browser is
+  // the only credential. Responses carry amounts and status, never personal data.
+  @Post('reservation/status')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  reservationStatus(
+    @Body(reservationKey) dto: ReservationKeyDto,
+    @Req() req: Request,
+  ) {
+    return this.payments.reservationStatus(dto.checkoutKey, req.ip ?? 'unknown');
+  }
+
+  @Post('reservation/resume')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  resumeReservation(
+    @Body(reservationKey) dto: ReservationKeyDto,
+    @Req() req: Request,
+  ) {
+    return this.payments.resumeReservation(
+      dto.checkoutKey,
+      req.ip ?? 'unknown',
+      req.headers.origin,
+    );
+  }
+
+  @Post('reservation/cancel')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  cancelReservation(
+    @Body(reservationKey) dto: ReservationKeyDto,
+    @Req() req: Request,
+  ) {
+    return this.payments.cancelReservation(dto.checkoutKey, req.ip ?? 'unknown');
   }
 
   @Get('checkout/:sessionId')
