@@ -21,7 +21,8 @@ export class CreateOrderItemDto {
 
   @IsInt()
   @Min(1)
-  @Max(10)
+  // No commercial quantity cap: PostgreSQL stock and payment amount are the limits.
+  @Max(2_147_483_647)
   quantity: number;
 }
 

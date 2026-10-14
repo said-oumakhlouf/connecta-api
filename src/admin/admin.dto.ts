@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   ValidateIf,
+  IsOptional,
   IsInt,
   IsIn,
   IsUUID,
@@ -31,6 +32,26 @@ export class AdminOrdersQueryDto {
   @Min(1)
   @Max(100)
   limit = 20;
+
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value)
+  @IsString()
+  @MaxLength(80)
+  search?: string;
+
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.toUpperCase() : value)
+  @IsString()
+  @Matches(/^[A-Z]$/)
+  letter?: string;
+
+  @IsIn(['date_desc', 'name_asc', 'name_desc'])
+  sort: 'date_desc' | 'name_asc' | 'name_desc' = 'date_desc';
+
+  @IsIn(['all', 'paid', 'unpaid', 'preparing', 'shipped', 'delivered'])
+  filter: 'all' | 'paid' | 'unpaid' | 'preparing' | 'shipped' | 'delivered' = 'all';
 }
 
 export class RestockProductDto {

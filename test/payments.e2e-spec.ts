@@ -104,6 +104,14 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         .useValue({
           client: sdk,
           origin: 'http://localhost:3000',
+          // Real allowlist logic: only these two storefront origins may receive returns.
+          returnOrigin: StripeGateway.prototype.returnOrigin.bind({
+            origin: 'http://localhost:3000',
+            returnOrigins: new Set([
+              'http://localhost:3000',
+              'https://connecta-test.tail0000.ts.net',
+            ]),
+          }),
           requireClient: () => sdk,
           verify: (body: Buffer, signature: string) =>
             Stripe.webhooks.constructEvent(body, signature, secret),
@@ -394,22 +402,101 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
       expect(await stock()).toBe(18);
     });
 
-    it('enforces ten units across duplicate lines and accepts the ten-unit boundary', async () => {
-      for (const items of [
-        [{ productId, quantity: 11 }],
-        [
-          { productId, quantity: 6 },
-          { productId, quantity: 5 },
+    it('checks out three distinct products, tracks separate stocks and validates the test Stripe total', async () => {
+      const fixtures = await prisma.product.createManyAndReturn({
+        data: [
+          { name: 'CONNECTA Câble USB-C TEST', slug: `cable-test-${randomUUID()}`, price: 990, stock: 12 },
+          { name: 'CONNECTA Chargeur 20W TEST', slug: `chargeur-test-${randomUUID()}`, price: 1990, stock: 7 },
         ],
-      ]) {
-        await checkout({ ...body(), items }).expect(400);
-        expect(await stock()).toBe(20);
+      });
+      try {
+        const lines = [
+          { productId, quantity: 2 },
+          { productId: fixtures[0].id, quantity: 1 },
+          { productId: fixtures[1].id, quantity: 1 },
+        ];
+        const response = await checkout({ ...body(), items: lines }).expect(200);
+        expect(response.body).toMatchObject({ total: 8980, shippingFee: 0, testMode: true });
+        const session = sessions.get(response.body.sessionId)!;
+        const stripeLines = sdk.checkout.sessions.create.mock.calls[0][0].line_items!;
+        expect(stripeLines).toHaveLength(3);
+        expect(stripeLines.map((item: Stripe.Checkout.SessionCreateParams.LineItem) => item.price_data!.unit_amount))
+          .toEqual([6000, 990, 1990]);
+        expect(session.amount_total).toBe(8980);
+        const items = await prisma.orderItem.findMany({
+          where: { order: { checkoutSessionId: session.id } },
+          orderBy: { productId: 'asc' },
+        });
+        expect(items).toHaveLength(3);
+        expect(items.reduce((total, item) => total + item.lineTotal, 0)).toBe(8980);
+        const stocks = async () => Promise.all(
+          [productId, fixtures[0].id, fixtures[1].id].map(async id =>
+            (await prisma.product.findUniqueOrThrow({ where: { id } })).stock),
+        );
+        expect(await stocks()).toEqual([18, 11, 6]);
+        session.status = 'complete';
+        session.payment_status = 'paid';
+        await event(session).then(result => expect(result.status).toBe(200));
+        await event(session).then(result => expect(result.status).toBe(200));
+        expect(await stocks()).toEqual([18, 11, 6]);
+        const status = await request(app.getHttpServer())
+          .get(`/payments/checkout/${session.id}`).expect(200);
+        expect(status.body).toMatchObject({ total: 8980, paymentStatus: 'PAID' });
+      } finally {
+        await prisma.order.deleteMany({ where: { items: { some: { productId: { in: fixtures.map(item => item.id) } } } } });
+        await prisma.product.deleteMany({ where: { id: { in: fixtures.map(item => item.id) } } });
       }
+    });
+
+    it('restores each reference of an expired mixed Stripe reservation', async () => {
+      const fixture = await prisma.product.create({
+        data: { name: 'CONNECTA Câble USB-C TEST', slug: `cancel-test-${randomUUID()}`, price: 990, stock: 5 },
+      });
+      try {
+        const response = await checkout({
+          ...body(), items: [{ productId, quantity: 1 }, { productId: fixture.id, quantity: 2 }],
+        }).expect(200);
+        expect(await stock()).toBe(19);
+        expect((await prisma.product.findUniqueOrThrow({ where: { id: fixture.id } })).stock).toBe(3);
+        await request(app.getHttpServer())
+          .post(`/payments/checkout/${response.body.sessionId}/cancel`).expect(200);
+        expect(await stock()).toBe(20);
+        expect((await prisma.product.findUniqueOrThrow({ where: { id: fixture.id } })).stock).toBe(5);
+      } finally {
+        await prisma.order.deleteMany({ where: { items: { some: { productId: fixture.id } } } });
+        await prisma.product.delete({ where: { id: fixture.id } });
+      }
+    });
+
+    it('allows a buyer to pay for all twenty available items, including duplicate lines', async () => {
+      const response = await checkout({
+        ...body(),
+        items: [
+          { productId, quantity: 11 },
+          { productId, quantity: 9 },
+        ],
+      }).expect(200);
+      expect(response.body).toMatchObject({ total: 60000, testMode: true });
+      expect(await stock()).toBe(0);
+      const session = sessions.get(response.body.sessionId)!;
+      expect(session.amount_total).toBe(60000);
+      const items = await prisma.orderItem.findMany({
+        where: { order: { checkoutSessionId: session.id } },
+      });
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ quantity: 20, lineTotal: 60000 });
+      session.status = 'complete';
+      session.payment_status = 'paid';
+      await event(session).then(result => expect(result.status).toBe(200));
+      expect(await stock()).toBe(0);
+    });
+
+    it('still refuses to reserve more units than are actually in stock', async () => {
       await checkout({
         ...body(),
-        items: [{ productId, quantity: 10 }],
-      }).expect(200);
-      expect(await stock()).toBe(10);
+        items: [{ productId, quantity: 21 }],
+      }).expect(409);
+      expect(await stock()).toBe(20);
     });
 
     it('blocks another unpaid reservation for a normalized email, then permits a new one after cancellation', async () => {
@@ -526,6 +613,141 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)(
         data: { createdAt: new Date(Date.now() - 32 * 60 * 1000) },
       });
       await checkout().expect(200);
+    });
+
+    describe('reservation resumed with its checkout key', () => {
+      const reservation = (path: string, checkoutKey: unknown, origin?: string) => {
+        const call = request(app.getHttpServer()).post(`/payments/reservation/${path}`);
+        if (origin) call.set('Origin', origin);
+        return call.send({ checkoutKey });
+      };
+
+      it('resumes the same payment page without a second reservation or personal data', async () => {
+        const value = body();
+        const first = await checkout(value).expect(200);
+        expect(await stock()).toBe(18);
+        const resumed = await reservation('resume', value.checkoutKey).expect(200);
+        expect(resumed.body).toEqual({
+          orderId: expect.any(String),
+          total: first.body.total,
+          shippingFee: 0,
+          paymentStatus: 'UNPAID',
+          expiresAt: expect.any(String),
+          testMode: true,
+          sessionId: first.body.sessionId,
+          url: first.body.url,
+        });
+        const status = await reservation('status', value.checkoutKey).expect(200);
+        for (const response of [resumed, status]) {
+          const text = JSON.stringify(response.body);
+          expect(text).not.toContain(email);
+          expect(text).not.toContain('Checkout Client');
+          expect(text).not.toContain('rue du Test');
+        }
+        expect(sdk.checkout.sessions.create).toHaveBeenCalledTimes(1);
+        expect(await stock()).toBe(18);
+        expect(await prisma.order.count({ where: { customerEmail: email } })).toBe(1);
+      });
+
+      it('opens the payment page of a reservation whose first response was lost', async () => {
+        const value = body();
+        sdk.checkout.sessions.create.mockRejectedValueOnce(new Error('offline'));
+        await checkout(value).expect(503);
+        expect(await stock()).toBe(18);
+        const resumed = await reservation('resume', value.checkoutKey).expect(200);
+        expect(resumed.body.paymentStatus).toBe('UNPAID');
+        expect(resumed.body.url).toMatch(/^https:\/\/checkout\.stripe\.com\//);
+        expect(await stock()).toBe(18);
+        expect(await prisma.order.count({ where: { customerEmail: email } })).toBe(1);
+      });
+
+      it('cancels with the key, frees the stock once and then reports the final state', async () => {
+        const value = body();
+        const first = await checkout(value).expect(200);
+        const cancelled = await reservation('cancel', value.checkoutKey).expect(200);
+        expect(cancelled.body.paymentStatus).toBe('EXPIRED');
+        expect(sdk.checkout.sessions.expire).toHaveBeenCalledWith(first.body.sessionId);
+        expect(await stock()).toBe(20);
+        await reservation('cancel', value.checkoutKey).expect(200);
+        const resumed = await reservation('resume', value.checkoutKey).expect(200);
+        expect(resumed.body).not.toHaveProperty('url');
+        expect(resumed.body.paymentStatus).toBe('EXPIRED');
+        expect(await stock()).toBe(20);
+      });
+
+      it('never cancels a paid reservation and reports it as paid', async () => {
+        const value = body();
+        const first = await checkout(value).expect(200);
+        const session = sessions.get(first.body.sessionId)!;
+        session.status = 'complete';
+        session.payment_status = 'paid';
+        const status = await reservation('status', value.checkoutKey).expect(200);
+        expect(status.body.paymentStatus).toBe('PAID');
+        const cancelled = await reservation('cancel', value.checkoutKey).expect(200);
+        expect(cancelled.body.paymentStatus).toBe('PAID');
+        const resumed = await reservation('resume', value.checkoutKey).expect(200);
+        expect(resumed.body).not.toHaveProperty('url');
+        expect(sdk.checkout.sessions.expire).not.toHaveBeenCalled();
+        expect(await stock()).toBe(18);
+      });
+
+      it('releases an overdue reservation on resume instead of reopening it', async () => {
+        const value = body();
+        const first = await checkout(value).expect(200);
+        await prisma.order.updateMany({
+          where: { checkoutKey: value.checkoutKey },
+          data: { reservedUntil: new Date(Date.now() - 1000) },
+        });
+        const resumed = await reservation('resume', value.checkoutKey).expect(200);
+        expect(resumed.body.paymentStatus).toBe('EXPIRED');
+        expect(resumed.body).not.toHaveProperty('url');
+        expect(sessions.get(first.body.sessionId)!.status).toBe('expired');
+        expect(await stock()).toBe(20);
+      });
+
+      it('rejects malformed or unknown keys and limits guessing per connection', async () => {
+        for (const invalid of ['', 'abc', 42, null, '00000000-0000-1000-8000-000000000000'])
+          await reservation('status', invalid).expect(400);
+        await request(app.getHttpServer())
+          .post('/payments/reservation/cancel')
+          .send({ checkoutKey: randomUUID(), orderId: 'x' })
+          .expect(400);
+        for (let attempt = 0; attempt < 10; attempt++)
+          await reservation('cancel', randomUUID()).expect(404);
+        await reservation('status', randomUUID()).expect(429);
+        // Even the right key is refused while this connection is blocked.
+        const value = body();
+        await checkout(value).expect(200);
+        await reservation('cancel', value.checkoutKey).expect(429);
+        expect(await stock()).toBe(18);
+      });
+
+      it('returns the shopper to an allowed origin only', async () => {
+        const allowed = body();
+        await request(app.getHttpServer())
+          .post('/payments/checkout')
+          .set('Origin', 'https://connecta-test.tail0000.ts.net')
+          .send(allowed)
+          .expect(200);
+        const params = sdk.checkout.sessions.create.mock.calls.at(-1)![0] as Stripe.Checkout.SessionCreateParams;
+        expect(params.success_url).toBe(
+          'https://connecta-test.tail0000.ts.net/paiement?session_id={CHECKOUT_SESSION_ID}',
+        );
+        expect(params.cancel_url).toBe('https://connecta-test.tail0000.ts.net/paiement?retour=1');
+        await reservation('cancel', allowed.checkoutKey).expect(200);
+
+        const forged = body();
+        await request(app.getHttpServer())
+          .post('/payments/checkout')
+          .set('Origin', 'https://evil.example')
+          .send(forged)
+          .expect(200);
+        const fallback = sdk.checkout.sessions.create.mock.calls.at(-1)![0] as Stripe.Checkout.SessionCreateParams;
+        expect(fallback.success_url).toBe(
+          'http://localhost:3000/paiement?session_id={CHECKOUT_SESSION_ID}',
+        );
+        expect(fallback.cancel_url).toBe('http://localhost:3000/paiement?retour=1');
+      });
     });
 
     it.skipIf(process.env.TEST_SERIAL_DATABASE === 'true')(

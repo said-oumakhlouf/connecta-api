@@ -23,6 +23,11 @@ describe('CreateOrderDto', () => {
     expect(dto.customerEmail).toBe('client@example.com');
   });
 
+  it('accepts a larger quantity for validation; stock is checked transactionally', async () => {
+    const dto = await validate({ ...valid, items: [{ productId: 1, quantity: 20 }] });
+    expect(dto.items[0].quantity).toBe(20);
+  });
+
   it.each([
     null,
     {},
@@ -35,7 +40,7 @@ describe('CreateOrderDto', () => {
     { ...valid, items: [{ productId: 1, quantity: -1 }] },
     { ...valid, items: [{ productId: 1, quantity: 1.5 }] },
     { ...valid, items: [{ productId: 1, quantity: '2' }] },
-    { ...valid, items: [{ productId: 1, quantity: 11 }] },
+    { ...valid, items: [{ productId: 1, quantity: 2_147_483_648 }] },
     { ...valid, items: [{ productId: 1, quantity: 2, unitPrice: 1 }] },
     { ...valid, total: 1 },
   ])('rejects malformed input or client-supplied prices: %j', async (body) => {

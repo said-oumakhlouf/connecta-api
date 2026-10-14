@@ -18,6 +18,18 @@ import { ShippingService } from '../shipping/shipping.service.js';
 import type { CheckoutDto } from './checkout.dto.js';
 import { Prisma, type Order } from '../generated/prisma/client.js';
 
+type ReservedOrder = Prisma.OrderGetPayload<{ include: { items: true } }>;
+
+/** Reservation state shared with the shopper: amounts and status, no personal data. */
+export type ReservationSummary = {
+  orderId: string;
+  total: number;
+  shippingFee: number;
+  paymentStatus: Order['paymentStatus'];
+  expiresAt: string | undefined;
+  testMode: true;
+};
+
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private timer?: ReturnType<typeof setInterval>;
@@ -27,6 +39,10 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
   private readonly attempts = new Map<
     string,
     { count: number; until: number }
+  >();
+  private readonly reservationLookups = new Map<
+    string,
+    { count: number; failures: number; until: number }
   >();
 
   constructor(
@@ -46,8 +62,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
     if (this.timer) clearInterval(this.timer);
   }
 
-  async checkout(dto: CheckoutDto, ip: string) {
-    const client = this.stripe.requireClient();
+  async checkout(dto: CheckoutDto, ip: string, origin?: string) {
+    this.stripe.requireClient();
     const quantities = new Map<number, number>();
     for (const item of dto.items)
       quantities.set(
@@ -98,6 +114,15 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       throw new ConflictException(
         'Cette tentative correspond à un autre panier',
       );
+    return this.openSession(order, this.stripe.returnOrigin(origin));
+  }
+
+  /**
+   * Return the payment page of an existing unpaid reservation. Never creates an
+   * order or reserves stock: it only creates or retrieves the linked session.
+   */
+  private async openSession(order: ReservedOrder, returnOrigin: string) {
+    const client = this.stripe.requireClient();
     if (
       order.paymentStatus !== 'UNPAID' ||
       !order.reservedUntil ||
@@ -120,8 +145,8 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
               client_reference_id: order.id,
               metadata: { orderId: order.id },
               expires_at: Math.floor(order.reservedUntil.getTime() / 1000),
-              success_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?session_id={CHECKOUT_SESSION_ID}`,
-              cancel_url: `${this.stripe.origin.replace(/\/$/, '')}/paiement?retour=1`,
+              success_url: `${returnOrigin}/paiement?session_id={CHECKOUT_SESSION_ID}`,
+              cancel_url: `${returnOrigin}/paiement?retour=1`,
               // Reservations made before shipping support have no stored address:
               // Stripe still collects it for them, as it did when they were created.
               ...(order.shippingAddress
@@ -202,6 +227,116 @@ export class PaymentsService implements OnModuleInit, OnModuleDestroy {
       );
     value.count++;
     this.attempts.set(ip, value);
+  }
+
+  /**
+   * Abuse protection for checkoutKey routes: a bounded number of requests per
+   * connection, and far fewer unknown keys (guessing is refused early).
+   */
+  private limitReservationLookup(ip: string) {
+    const now = Date.now();
+    for (const [key, value] of this.reservationLookups)
+      if (value.until <= now) this.reservationLookups.delete(key);
+    const value = this.reservationLookups.get(ip) ?? {
+      count: 0,
+      failures: 0,
+      until: now + 15 * 60 * 1000,
+    };
+    if (
+      value.count >= 60 ||
+      value.failures >= 10 ||
+      (!this.reservationLookups.has(ip) && this.reservationLookups.size >= 5000)
+    )
+      throw new HttpException(
+        'Trop de demandes. Patientez quelques minutes avant de réessayer.',
+        429,
+      );
+    value.count++;
+    this.reservationLookups.set(ip, value);
+    return value;
+  }
+
+  /** Only the holder of the random checkout key (UUID v4) can act on its reservation. */
+  private async reservationByKey(checkoutKey: string, ip: string) {
+    const counter = this.limitReservationLookup(ip);
+    const order = await this.prisma.order.findUnique({
+      where: { checkoutKey },
+      include: { items: true },
+    });
+    if (!order) {
+      counter.failures++;
+      throw new NotFoundException('Réservation introuvable');
+    }
+    return order;
+  }
+
+  private summary(order: Order): ReservationSummary {
+    return {
+      orderId: order.id,
+      total: order.total,
+      shippingFee: order.shippingFee,
+      paymentStatus: order.paymentStatus,
+      expiresAt: order.reservedUntil?.toISOString(),
+      testMode: true,
+    };
+  }
+
+  private async reload(id: string) {
+    return this.prisma.order.findUniqueOrThrow({ where: { id } });
+  }
+
+  /** Current state of the shopper's reservation, synchronised with Stripe. */
+  async reservationStatus(checkoutKey: string, ip: string) {
+    const order = await this.reservationByKey(checkoutKey, ip);
+    if (order.paymentStatus === 'UNPAID' && order.checkoutSessionId)
+      await this.applySession(
+        await this.stripe
+          .requireClient()
+          .checkout.sessions.retrieve(order.checkoutSessionId),
+        order,
+      );
+    return this.summary(await this.reload(order.id));
+  }
+
+  /**
+   * Resume payment of the existing reservation. Returns its payment page while
+   * it is open; otherwise only its final state. Never reserves stock again.
+   */
+  async resumeReservation(checkoutKey: string, ip: string, origin?: string) {
+    const order = await this.reservationByKey(checkoutKey, ip);
+    if (
+      order.paymentStatus === 'UNPAID' &&
+      order.reservedUntil &&
+      order.reservedUntil.getTime() > Date.now()
+    ) {
+      try {
+        const session = await this.openSession(
+          order,
+          this.stripe.returnOrigin(origin),
+        );
+        return {
+          ...this.summary(await this.reload(order.id)),
+          sessionId: session.sessionId,
+          url: session.url,
+        };
+      } catch (error) {
+        // A session completed or expired meanwhile: report its synchronised state.
+        if (!(error instanceof ConflictException)) throw error;
+      }
+    } else if (order.paymentStatus === 'UNPAID') {
+      // Past its deadline: same safe path as the expiry sweep.
+      await this.cancel(order.id).catch((error: unknown) => {
+        if (!(error instanceof ConflictException)) throw error;
+      });
+    }
+    return this.summary(await this.reload(order.id));
+  }
+
+  /** Cancel the shopper's own reservation; a paid order is never cancelled here. */
+  async cancelReservation(checkoutKey: string, ip: string) {
+    const order = await this.reservationByKey(checkoutKey, ip);
+    if (order.paymentStatus === 'UNPAID') await this.cancel(order.id);
+    return this.summary(await this.reload(order.id));
   }
 
   private validateSession(session: Stripe.Checkout.Session, order: Order) {

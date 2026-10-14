@@ -204,6 +204,18 @@ Stripe reste nécessaire après configuration.
   ne constitue jamais une preuve de paiement.
 - `POST /payments/checkout/:sessionId/cancel` : expire une session ouverte avant
   de remettre le stock. En cas d'incertitude réseau, le stock reste réservé.
+- `POST /payments/reservation/{status,resume,cancel}` : corps `{ "checkoutKey": "<UUID v4>" }`.
+  La clé aléatoire générée par le navigateur du client est le seul justificatif.
+  `resume` renvoie la page de paiement de la réservation existante (même session,
+  ou création de la session si la première réponse a été perdue) et ne réserve
+  jamais de stock une seconde fois ; une réservation échue est libérée. `cancel`
+  expire la session avant de restituer le stock et ne touche jamais une commande
+  payée. Réponses : montants et statut, sans coordonnées. Par connexion : 60 appels
+  et 10 clés inconnues au plus sur 15 minutes (429 ensuite).
+- Retour après paiement : vers `CHECKOUT_SITE_URL`, ou vers une origine listée dans
+  `CHECKOUT_RETURN_ORIGINS` si la requête vient exactement de celle-ci (utile pour
+  tester à la fois `localhost:3000` et une adresse Tailscale, le `sessionStorage`
+  du navigateur étant propre à chaque origine). Variable vide : comportement inchangé.
 - `POST /payments/webhook` : corps brut et signature Stripe vérifiée. Les événements
   répétés et reçus dans le désordre sont traités à partir de l'état actuel Stripe.
   Le montant, la devise et l'identifiant de commande doivent correspondre en base.

@@ -83,7 +83,7 @@ export class MemberOrdersService {
     return order;
   }
 
-  async resume(email: string, id: string, ip: string) {
+  async resume(email: string, id: string, ip: string, origin?: string) {
     const order = await this.owned(email, id);
     if (order.paymentStatus !== 'UNPAID' || !order.checkoutKey)
       throw new ConflictException('Cette commande ne peut plus être payée.');
@@ -101,6 +101,7 @@ export class MemberOrdersService {
         expectedShippingFee: order.shippingFee,
       },
       ip,
+      origin,
     );
   }
 

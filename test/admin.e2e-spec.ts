@@ -449,6 +449,59 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Admin (e2e)', () => {
       .expect(400);
   });
 
+  it('searches every order before pagination, sorts A–Z and filters delivered parcels', async () => {
+    const suffix = randomUUID().slice(0, 8);
+    const marker = `TestParcel${suffix}`;
+    for (let index = 0; index < 24; index++) {
+      const delivered = index === 23;
+      await prisma.order.create({
+        data: {
+          customerName: index === 23 ? `Alice ${marker}` : `Zoé ${marker} ${String(index).padStart(2, '0')}`,
+          customerEmail: email,
+          status: 'CONFIRMED',
+          paymentStatus: delivered ? 'PAID' : 'LEGACY',
+          fulfillmentStatus: delivered ? 'DELIVERED' : 'UNFULFILLED',
+          ...(delivered ? { paidAt: new Date(), shippedAt: new Date(), deliveredAt: new Date() } : {}),
+          total: 3500,
+          items: { create: {
+            productId, productName: index === 23 ? `Chargeur ${marker}` : 'Hoco TEST',
+            quantity: 1, unitPrice: 3500, discount: 0, lineTotal: 3500,
+          } },
+        },
+      });
+    }
+    const auth = (path: string) => request(app.getHttpServer())
+      .get(path).set('Authorization', authorization);
+
+    // The matching "Alice" order is oldest and absent from the first page (20).
+    const all = await auth('/admin/orders?limit=20&page=1').expect(200);
+    expect(all.body.total).toBeGreaterThanOrEqual(24);
+    const searched = await auth(`/admin/orders?search=${encodeURIComponent(marker)}&letter=A&limit=20&page=1`).expect(200);
+    expect(searched.body.total).toBe(1);
+    expect(searched.body.orders[0]).toMatchObject({
+      customerName: `Alice ${marker}`,
+      paymentStatus: 'PAID',
+      fulfillmentStatus: 'DELIVERED',
+      items: [{ productName: `Chargeur ${marker}`, quantity: 1 }],
+    });
+    expect(searched.body.orders[0].deliveredAt).toBeTruthy();
+
+    const byProduct = await auth(`/admin/orders?search=Chargeur%20${marker}&sort=name_asc&filter=delivered`).expect(200);
+    expect(byProduct.body.total).toBe(1);
+    const byEmail = await auth(`/admin/orders?search=${encodeURIComponent(email)}&sort=name_asc&limit=100`).expect(200);
+    expect(byEmail.body.total).toBe(24);
+    expect(byEmail.body.orders[0].customerName).toBe(`Alice ${marker}`);
+    const byLastName = await auth(`/admin/orders?search=${marker}&sort=name_desc&limit=100`).expect(200);
+    expect(byLastName.body.orders[0].customerName).toContain('Zoé');
+
+    for (const query of [
+      'letter=1', 'letter=AA', 'sort=unknown', 'filter=unknown',
+      `search=${'x'.repeat(81)}`, 'extra=value',
+    ]) await auth(`/admin/orders?${query}`).expect(400);
+    await request(app.getHttpServer())
+      .get(`/admin/orders?search=${marker}`).expect(401);
+  });
+
   it('lists inactive products without publishing them to the storefront', async () => {
     await prisma.product.update({
       where: { id: productId },

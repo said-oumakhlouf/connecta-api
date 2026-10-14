@@ -98,6 +98,7 @@ export class MembersController {
     return this.payments.checkout(
       { ...dto, customerEmail: member.email },
       req.ip ?? 'unknown',
+      req.headers.origin,
     );
   }
 
@@ -120,7 +121,7 @@ export class MembersController {
   ) {
     this.auth.assertOrigin(req.headers.origin);
     const member = await this.auth.authorize(req);
-    return this.orders.resume(member.email, id, req.ip ?? 'unknown');
+    return this.orders.resume(member.email, id, req.ip ?? 'unknown', req.headers.origin);
   }
 
   @Post('orders/:id/cancel')
