@@ -37,6 +37,25 @@ describe('Admin product editor', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it('keeps accessory pricing single-unit and prevents adding a Duo', async () => {
+    findUnique.mockResolvedValue({ ...current, slug: 'connecta-cable-usb-c-test', duoPrice: null });
+    await expect(service.updateProduct(1, { duoPrice: 1500 }))
+      .rejects.toBeInstanceOf(BadRequestException);
+    expect(update).not.toHaveBeenCalled();
+    await service.updateProduct(1, { price: 990, description: 'Câble USB-C' });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { price: 990, description: 'Câble USB-C' },
+    }));
+  });
+
+  it('permits restoring a temporarily disabled Hoco Duo', async () => {
+    findUnique.mockResolvedValue({ ...current, duoPrice: null });
+    await service.updateProduct(1, { duoPrice: 6000 });
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { duoPrice: 6000 },
+    }));
+  });
+
   it('rejects unknown product', async () => {
     findUnique.mockResolvedValue(null);
     await expect(service.updateProduct(404, { price: 4000 })).rejects.toBeInstanceOf(NotFoundException);
