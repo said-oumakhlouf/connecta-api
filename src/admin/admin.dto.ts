@@ -3,6 +3,7 @@ import {
   ValidateIf,
   IsOptional,
   IsInt,
+  IsBoolean,
   IsIn,
   IsUUID,
   IsString,
@@ -52,6 +53,42 @@ export class AdminOrdersQueryDto {
 
   @IsIn(['all', 'paid', 'unpaid', 'preparing', 'shipped', 'delivered'])
   filter: 'all' | 'paid' | 'unpaid' | 'preparing' | 'shipped' | 'delivered' = 'all';
+}
+
+/** Editable catalogue fields; neither stock nor product ID may be changed here. */
+export class UpdateProductDto {
+  @ValidateIf((_dto: UpdateProductDto, value: unknown) => value !== undefined)
+  @IsString()
+  @MinLength(2)
+  @MaxLength(150)
+  name?: string;
+
+  @ValidateIf((_dto: UpdateProductDto, value: unknown) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
+  price?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(2147483647)
+  duoPrice?: number | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  description?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^https:\/\/res\.cloudinary\.com\/[a-zA-Z0-9_-]+\/image\/upload\/[a-zA-Z0-9_/.%-]+$/)
+  @MaxLength(800)
+  imageUrl?: string | null;
+
+  @ValidateIf((_dto: UpdateProductDto, value: unknown) => value !== undefined)
+  @IsBoolean()
+  active?: boolean;
 }
 
 export class RestockProductDto {
