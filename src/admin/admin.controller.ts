@@ -7,6 +7,7 @@ import {
   HttpCode,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -22,6 +23,7 @@ import {
   AdminLoginDto,
   AdminOrdersQueryDto,
   RestockProductDto,
+  UpdateProductDto,
   OrderIdDto,
   UpdateOrderStatusDto,
   AdminAnalyticsQueryDto,
@@ -33,6 +35,7 @@ const validate = (
     | typeof AdminLoginDto
     | typeof AdminOrdersQueryDto
     | typeof RestockProductDto
+    | typeof UpdateProductDto
     | typeof OrderIdDto
     | typeof UpdateOrderStatusDto
     | typeof AdminAnalyticsQueryDto,
@@ -105,6 +108,21 @@ export class AdminController {
     @Body(validate(UpdateFulfillmentDto)) dto: UpdateFulfillmentDto,
   ) {
     return this.admin.updateFulfillment(id, dto);
+  }
+
+  @Patch('products/:id')
+  @Header('Cache-Control', 'no-store')
+  updateProduct(
+    @Param('id', ParseIntPipe) id: number,
+    @Body(validate(UpdateProductDto)) dto: UpdateProductDto,
+  ) {
+    return this.admin.updateProduct(id, dto);
+  }
+
+  @Get('uploads/cloudinary-signature')
+  @Header('Cache-Control', 'no-store')
+  uploadSignature() {
+    return this.admin.uploadSignature();
   }
 
   @Post('products/:id/restock')
