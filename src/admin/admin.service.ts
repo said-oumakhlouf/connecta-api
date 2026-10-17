@@ -1,11 +1,13 @@
+import { createHash } from 'node:crypto';
 import {
+  ServiceUnavailableException,
   BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
-import type { AdminOrdersQueryDto, UpdateFulfillmentDto } from './admin.dto.js';
+import type { AdminOrdersQueryDto, UpdateFulfillmentDto, UpdateProductDto } from './admin.dto.js';
 import { PaymentsService } from '../payments/payments.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 
@@ -15,6 +17,8 @@ const productSelect = {
   slug: true,
   price: true,
   duoPrice: true,
+  description: true,
+  imageUrl: true,
   stock: true,
   active: true,
 } as const;
@@ -290,6 +294,44 @@ export class AdminService {
       if (!changed.count && !same(order)) throw new ConflictException('La livraison a changé. Actualisez.');
       return order;
     });
+  }
+
+  async updateProduct(id: number, dto: UpdateProductDto) {
+    if (!Number.isSafeInteger(id) || id < 1 || id > 2_147_483_647)
+      throw new BadRequestException('Identifiant produit invalide');
+    const current = await this.prisma.product.findUnique({ where: { id } });
+    if (!current) throw new NotFoundException('Produit introuvable');
+    if (Object.keys(dto).length === 0)
+      throw new BadRequestException('Aucun champ à modifier');
+    const price = dto.price ?? current.price;
+    const duoPrice = dto.duoPrice === undefined ? current.duoPrice : dto.duoPrice;
+    if (duoPrice !== null && duoPrice > 2 * price)
+      throw new BadRequestException('Le prix Duo ne peut pas dépasser deux unités');
+    if (dto.imageUrl && process.env.CLOUDINARY_CLOUD_NAME) {
+      const cloud = process.env.CLOUDINARY_CLOUD_NAME;
+      if (!dto.imageUrl.startsWith(`https://res.cloudinary.com/${cloud}/image/upload/`))
+        throw new BadRequestException('La photo ne provient pas du compte Cloudinary configuré');
+    }
+    return this.prisma.product.update({
+      where: { id },
+      data: dto,
+      select: productSelect,
+    });
+  }
+
+  /** Short-lived signed direct upload. Image bytes never transit through NestJS. */
+  uploadSignature() {
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+    if (!cloudName || !apiKey || !apiSecret)
+      throw new ServiceUnavailableException('Le stockage des photos n’est pas encore configuré');
+    if (!/^[a-zA-Z0-9_-]+$/.test(cloudName))
+      throw new ServiceUnavailableException('Configuration du stockage invalide');
+    const folder = 'connecta/products';
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = createHash('sha1').update(`folder=${folder}&timestamp=${timestamp}${apiSecret}`).digest('hex');
+    return { cloudName, apiKey, folder, timestamp, signature };
   }
 
   restock(id: number, quantity: number) {
