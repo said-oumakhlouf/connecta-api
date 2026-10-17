@@ -11,7 +11,7 @@ export function configureCors(
       .map((origin) => origin.trim())
       .filter(Boolean),
     credentials: true,
-    methods: ['GET', 'POST'],
+    methods: ['GET', 'POST', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     maxAge: 600,
   });
