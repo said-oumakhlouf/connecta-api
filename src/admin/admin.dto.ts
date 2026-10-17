@@ -57,13 +57,13 @@ export class AdminOrdersQueryDto {
 
 /** Editable catalogue fields; neither stock nor product ID may be changed here. */
 export class UpdateProductDto {
-  @IsOptional()
+  @ValidateIf((_dto: UpdateProductDto, value: unknown) => value !== undefined)
   @IsString()
   @MinLength(2)
   @MaxLength(150)
   name?: string;
 
-  @IsOptional()
+  @ValidateIf((_dto: UpdateProductDto, value: unknown) => value !== undefined)
   @IsInt()
   @Min(1)
   @Max(2147483647)
@@ -86,7 +86,7 @@ export class UpdateProductDto {
   @MaxLength(800)
   imageUrl?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_dto: UpdateProductDto, value: unknown) => value !== undefined)
   @IsBoolean()
   active?: boolean;
 }
