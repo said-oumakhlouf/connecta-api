@@ -597,4 +597,27 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Admin (e2e)', () => {
       ).toBe(5);
     },
   );
+  it('edits catalogue properties via guarded API without touching stock', async () => {
+    const url = `/admin/products/${productId}`;
+    await request(app.getHttpServer()).patch(url)
+      .send({ name: 'Unauthorized', price: 3900 }).expect(401);
+    await request(app.getHttpServer()).patch(url)
+      .set('Authorization', authorization).send({ price: 0 }).expect(400);
+    await request(app.getHttpServer()).patch(url)
+      .set('Authorization', authorization).send({ price: null }).expect(400);
+    await request(app.getHttpServer()).patch(url)
+      .set('Authorization', authorization).send({ stock: 999 }).expect(400);
+    const edited = await request(app.getHttpServer()).patch(url)
+      .set('Authorization', authorization)
+      .send({ name: 'Admin product edited', price: 3900, duoPrice: 6500,
+        description: 'Description vérifiée', imageUrl: null, active: true })
+      .expect(200);
+    expect(edited.body).toMatchObject({ name: 'Admin product edited', price: 3900,
+      duoPrice: 6500, stock: 0, description: 'Description vérifiée', imageUrl: null });
+    const published = await request(app.getHttpServer()).get('/products').expect(200);
+    expect(published.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: productId, price: 3900, description: 'Description vérifiée' }),
+    ]));
+  });
+
 });
