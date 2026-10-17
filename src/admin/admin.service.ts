@@ -303,6 +303,12 @@ export class AdminService {
     if (!current) throw new NotFoundException('Produit introuvable');
     if (Object.keys(dto).length === 0)
       throw new BadRequestException('Aucun champ à modifier');
+    // A Duo is an optional offer, not a pricing field for accessories.
+    // Existing Duo products retain editing rights; Hoco can restore a disabled offer.
+    if (current.duoPrice === null && current.slug !== 'hoco-ew75' &&
+        dto.duoPrice !== undefined && dto.duoPrice !== null) {
+      throw new BadRequestException('Offre Duo indisponible pour cet accessoire');
+    }
     const price = dto.price ?? current.price;
     const duoPrice = dto.duoPrice === undefined ? current.duoPrice : dto.duoPrice;
     if (duoPrice !== null && duoPrice > 2 * price)
