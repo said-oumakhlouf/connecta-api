@@ -382,6 +382,28 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Admin (e2e)', () => {
     );
   });
 
+  it('permits authenticated PATCH product edits from the admin browser origin', async () => {
+    const preflight = await request(app.getHttpServer())
+      .options(`/admin/products/${productId}`)
+      .set('Origin', 'http://localhost:3000')
+      .set('Access-Control-Request-Method', 'PATCH')
+      .set('Access-Control-Request-Headers', 'authorization,content-type')
+      .expect(204);
+    expect(preflight.headers['access-control-allow-methods']).toContain('PATCH');
+    expect(preflight.headers['access-control-allow-headers']).toContain('Authorization');
+    expect(preflight.headers['access-control-allow-headers']).toContain('Content-Type');
+    expect(preflight.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+
+    const saved = await request(app.getHttpServer())
+      .patch(`/admin/products/${productId}`)
+      .set('Origin', 'http://localhost:3000')
+      .set('Authorization', authorization)
+      .send({ description: 'Description de test CONNECTA' })
+      .expect(200);
+    expect(saved.headers['access-control-allow-origin']).toBe('http://localhost:3000');
+    expect(saved.body.description).toBe('Description de test CONNECTA');
+  });
+
   it('adds stock and makes a sold-out product orderable again', async () => {
     const response = await restock(20).expect(201);
     expect(response.body).toMatchObject({ id: productId, stock: 20 });
